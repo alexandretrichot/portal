@@ -17,6 +17,9 @@ authors = ["Alex Trichot <alexandre.trichot@gmail.com>"]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
+# MCP SDK
+rmcp = { version = "1.5", features = ["server", "client", "transport-child-process", "transport-streamable-http-server"] }
+
 # HTTP server
 axum = { version = "0.8", features = ["ws", "macros"] }
 tower = { version = "0.5", features = ["full"] }

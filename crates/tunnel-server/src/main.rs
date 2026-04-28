@@ -1,5 +1,6 @@
 mod config;
 mod mcp_handler;
+mod mcp_proxy;
 mod offline;
 mod pending;
 mod registry;

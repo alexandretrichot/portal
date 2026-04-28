@@ -25,3 +25,4 @@ tracing-subscriber.workspace = true
 dashmap.workspace = true
 rand.workspace = true
 chrono.workspace = true
+rmcp.workspace = true

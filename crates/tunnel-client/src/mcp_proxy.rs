@@ -1,8 +1,11 @@
 use std::collections::HashMap;
-use std::process::Stdio;
+use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use rmcp::{
+    Peer, RoleClient, ServiceExt,
+    model::CallToolRequestParams,
+    transport::TokioChildProcess,
+};
 use tokio::sync::Mutex;
 use tunnel_common::{McpRequestMessage, McpResponseMessage, TunnelError};
 
@@ -10,21 +13,14 @@ use crate::config::McpServerConfig;
 
 pub struct McpProxyManager {
     configs: HashMap<String, McpServerConfig>,
-    processes: Mutex<HashMap<String, McpProcess>>,
-}
-
-struct McpProcess {
-    #[allow(dead_code)]
-    child: Child,
-    stdin: tokio::process::ChildStdin,
-    stdout: BufReader<tokio::process::ChildStdout>,
+    clients: Mutex<HashMap<String, Arc<Peer<RoleClient>>>>,
 }
 
 impl McpProxyManager {
     pub fn new(configs: HashMap<String, McpServerConfig>) -> Self {
         Self {
             configs,
-            processes: Mutex::new(HashMap::new()),
+            clients: Mutex::new(HashMap::new()),
         }
     }
 
@@ -61,116 +57,154 @@ impl McpProxyManager {
         }
     }
 
+    async fn get_or_create_client(
+        &self,
+        name: &str,
+        config: &McpServerConfig,
+    ) -> Result<Arc<Peer<RoleClient>>, String> {
+        let mut clients = self.clients.lock().await;
+
+        if let Some(client) = clients.get(name) {
+            return Ok(client.clone());
+        }
+
+        let command = config.command.as_ref().ok_or("No command specified")?;
+
+        let mut cmd = tokio::process::Command::new(command);
+        cmd.args(&config.args);
+        for (key, value) in &config.env {
+            cmd.env(key, value);
+        }
+
+        let transport = TokioChildProcess::new(cmd)
+            .map_err(|e| format!("Failed to spawn process: {}", e))?;
+
+        let running = ().serve(transport).await
+            .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
+
+        let peer = Arc::new(running.peer().clone());
+        clients.insert(name.to_string(), peer.clone());
+
+        // Keep the running service alive in a background task
+        tokio::spawn(async move {
+            let _ = running.waiting().await;
+        });
+
+        Ok(peer)
+    }
+
     async fn forward_stdio(
         &self,
         req: McpRequestMessage,
         name: &str,
         config: &McpServerConfig,
     ) -> McpResponseMessage {
-        let mut processes = self.processes.lock().await;
-
-        if !processes.contains_key(name) {
-            match self.spawn_process(config).await {
-                Ok(process) => {
-                    processes.insert(name.to_string(), process);
-                }
-                Err(e) => {
-                    return McpResponseMessage::error(
-                        req.correlation_id,
-                        TunnelError::new(-32603, format!("Failed to spawn MCP server: {}", e)),
-                    );
-                }
-            }
-        }
-
-        let process = processes.get_mut(name).unwrap();
-
-        let request_line = match serde_json::to_string(&req.payload) {
-            Ok(s) => s,
+        let peer = match self.get_or_create_client(name, config).await {
+            Ok(c) => c,
             Err(e) => {
                 return McpResponseMessage::error(
                     req.correlation_id,
-                    TunnelError::new(-32700, format!("Failed to serialize request: {}", e)),
+                    TunnelError::new(-32603, e),
                 );
             }
         };
 
-        if let Err(e) = process.stdin.write_all(request_line.as_bytes()).await {
-            processes.remove(name);
-            return McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32603, format!("Failed to write to MCP server: {}", e)),
-            );
-        }
+        let method = req.payload.get("method").and_then(|m| m.as_str());
+        let params = req.payload.get("params");
+        let id = req.payload.get("id").cloned();
 
-        if let Err(e) = process.stdin.write_all(b"\n").await {
-            processes.remove(name);
-            return McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32603, format!("Failed to write to MCP server: {}", e)),
-            );
-        }
-
-        if let Err(e) = process.stdin.flush().await {
-            processes.remove(name);
-            return McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32603, format!("Failed to flush to MCP server: {}", e)),
-            );
-        }
-
-        let mut response_line = String::new();
-        match process.stdout.read_line(&mut response_line).await {
-            Ok(0) => {
-                processes.remove(name);
-                McpResponseMessage::error(
-                    req.correlation_id,
-                    TunnelError::new(-32603, "MCP server closed connection"),
-                )
+        match method {
+            Some("tools/list") => {
+                match peer.list_tools(Default::default()).await {
+                    Ok(result) => {
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result
+                        });
+                        McpResponseMessage::success(req.correlation_id, response)
+                    }
+                    Err(e) => McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32603, format!("tools/list failed: {}", e)),
+                    ),
+                }
             }
-            Ok(_) => match serde_json::from_str(&response_line) {
-                Ok(payload) => McpResponseMessage::success(req.correlation_id, payload),
-                Err(e) => McpResponseMessage::error(
-                    req.correlation_id,
-                    TunnelError::new(-32700, format!("Invalid response from MCP server: {}", e)),
-                ),
-            },
-            Err(e) => {
-                processes.remove(name);
-                McpResponseMessage::error(
-                    req.correlation_id,
-                    TunnelError::new(-32603, format!("Failed to read from MCP server: {}", e)),
-                )
+            Some("tools/call") => {
+                let tool_params: CallToolRequestParams = match params {
+                    Some(p) => match serde_json::from_value(p.clone()) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return McpResponseMessage::error(
+                                req.correlation_id,
+                                TunnelError::new(-32602, format!("Invalid params: {}", e)),
+                            );
+                        }
+                    },
+                    None => {
+                        return McpResponseMessage::error(
+                            req.correlation_id,
+                            TunnelError::new(-32602, "Missing params for tools/call"),
+                        );
+                    }
+                };
+
+                match peer.call_tool(tool_params).await {
+                    Ok(result) => {
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result
+                        });
+                        McpResponseMessage::success(req.correlation_id, response)
+                    }
+                    Err(e) => McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32603, format!("tools/call failed: {}", e)),
+                    ),
+                }
             }
+            Some("resources/list") => {
+                match peer.list_resources(Default::default()).await {
+                    Ok(result) => {
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result
+                        });
+                        McpResponseMessage::success(req.correlation_id, response)
+                    }
+                    Err(e) => McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32603, format!("resources/list failed: {}", e)),
+                    ),
+                }
+            }
+            Some("prompts/list") => {
+                match peer.list_prompts(Default::default()).await {
+                    Ok(result) => {
+                        let response = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": result
+                        });
+                        McpResponseMessage::success(req.correlation_id, response)
+                    }
+                    Err(e) => McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32603, format!("prompts/list failed: {}", e)),
+                    ),
+                }
+            }
+            Some(other) => McpResponseMessage::error(
+                req.correlation_id,
+                TunnelError::new(-32601, format!("Method not supported: {}", other)),
+            ),
+            None => McpResponseMessage::error(
+                req.correlation_id,
+                TunnelError::new(-32600, "Missing method in request"),
+            ),
         }
-    }
-
-    async fn spawn_process(&self, config: &McpServerConfig) -> anyhow::Result<McpProcess> {
-        let command = config
-            .command
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No command specified"))?;
-
-        let mut cmd = Command::new(command);
-        cmd.args(&config.args)
-            .envs(&config.env)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-
-        let mut child = cmd.spawn()?;
-
-        let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("No stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("No stdout"))?;
-
-        Ok(McpProcess {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-        })
     }
 
     async fn forward_http(

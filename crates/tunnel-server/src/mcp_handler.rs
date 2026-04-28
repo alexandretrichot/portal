@@ -1,132 +1,71 @@
-use std::time::Duration;
+use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{get, post};
+use axum::routing::{any, get};
 use axum::Router;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
+use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use serde_json::json;
-use tokio::time::timeout;
-use tunnel_common::{McpRequestMessage, TunnelMessage};
-use uuid::Uuid;
+use tower::Service as TowerService;
 
+use crate::mcp_proxy::TunnelProxyServer;
 use crate::offline::OfflineResponse;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/{token}/mcp", post(handle_mcp_request))
+        .route("/v1/{token}/mcp", any(handle_mcp_streamable))
         .route("/v1/{token}/status", get(check_device_status))
         .route("/health", get(health_check))
 }
 
-async fn handle_mcp_request(
+async fn handle_mcp_streamable(
     State(state): State<AppState>,
     Path(token): Path<String>,
-    body: String,
+    request: Request<Body>,
 ) -> impl IntoResponse {
-    let payload: serde_json::Value = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": null,
-                    "error": {
-                        "code": -32700,
-                        "message": format!("Parse error: {}", e)
-                    }
-                })
-                .to_string(),
-            )
-                .into_response();
-        }
-    };
-
-    let request_id = payload.get("id").cloned();
-    let correlation_id = Uuid::new_v4();
-
-    let handle = match state.registry.get(&token) {
-        Some(h) => h,
-        None => {
-            let device_info = state.registry.get_device_info(&token);
-            return OfflineResponse::new(
-                request_id,
-                device_info.as_ref(),
-                state.config.offline_response.retry_after_secs,
-            )
-            .into_response();
-        }
-    };
-
-    let mcp_request = TunnelMessage::McpRequest(McpRequestMessage {
-        correlation_id,
-        payload,
-        target_server: None,
-        timeout_ms: Some(state.config.limits.request_timeout_secs * 1000),
-    });
-
-    if handle.sender.send(mcp_request).await.is_err() {
+    if !state.registry.is_online(&token) {
         let device_info = state.registry.get_device_info(&token);
         return OfflineResponse::new(
-            request_id,
+            None,
             device_info.as_ref(),
             state.config.offline_response.retry_after_secs,
         )
         .into_response();
     }
 
-    let timeout_duration = Duration::from_secs(state.config.limits.request_timeout_secs);
+    let registry = state.registry.clone();
+    let pending = state.pending.clone();
+    let token_clone = token.clone();
 
-    let response_rx = state.pending.register(correlation_id);
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true)
+        .disable_allowed_hosts();
 
-    match timeout(timeout_duration, response_rx).await {
-        Ok(Ok(response)) => {
-            if let Some(error) = response.error {
-                (
-                    StatusCode::OK,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": error.code,
-                            "message": error.message
-                        }
-                    })
-                    .to_string(),
-                )
-                    .into_response()
-            } else if let Some(payload) = response.payload {
-                (StatusCode::OK, payload.to_string()).into_response()
-            } else {
-                (
-                    StatusCode::OK,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": null
-                    })
-                    .to_string(),
-                )
-                    .into_response()
-            }
-        }
-        Ok(Err(_)) => {
-            let device_info = state.registry.get_device_info(&token);
+    let session_manager = Arc::new(LocalSessionManager::default());
+    let mut service = StreamableHttpService::new(
+        move || -> Result<TunnelProxyServer, std::io::Error> {
+            Ok(TunnelProxyServer::new(
+                token_clone.clone(),
+                registry.clone(),
+                pending.clone(),
+            ))
+        },
+        session_manager,
+        config,
+    );
+
+    match service.call(request).await {
+        Ok(response) => response.into_response(),
+        Err(e) => {
+            tracing::error!("MCP service error: {:?}", e);
             (
-                StatusCode::GATEWAY_TIMEOUT,
-                crate::offline::create_timeout_response(request_id, device_info.as_ref())
-                    .to_string(),
-            )
-                .into_response()
-        }
-        Err(_) => {
-            let device_info = state.registry.get_device_info(&token);
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                crate::offline::create_timeout_response(request_id, device_info.as_ref())
-                    .to_string(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "Internal server error"}).to_string(),
             )
                 .into_response()
         }
