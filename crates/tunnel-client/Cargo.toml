@@ -1,0 +1,27 @@
+[package]
+name = "tunnel-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tunnel-client"
+path = "src/main.rs"
+
+[dependencies]
+tunnel-common.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dashmap.workspace = true
+rand.workspace = true
+chrono.workspace = true

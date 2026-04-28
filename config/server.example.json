@@ -1,0 +1,23 @@
+{
+  "server": {
+    "bind": "0.0.0.0:8080",
+    "ws_path": "/tunnel"
+  },
+  "tokens": {
+    "backend": "allow_all"
+  },
+  "limits": {
+    "max_connections_per_token": 1,
+    "max_total_connections": 10000,
+    "request_timeout_secs": 30
+  },
+  "heartbeat": {
+    "interval_secs": 30,
+    "timeout_secs": 10,
+    "max_missed": 3
+  },
+  "offline_response": {
+    "message": "The device is currently offline. Please try again later.",
+    "retry_after_secs": 30
+  }
+}

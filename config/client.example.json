@@ -1,0 +1,16 @@
+{
+  "deviceName": "My MacBook",
+  "tunnelServer": {
+    "url": "wss://tunnel.example.com",
+    "token": "tmcp_your_token_here"
+  },
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/documents"]
+    },
+    "database": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
