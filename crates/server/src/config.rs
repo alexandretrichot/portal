@@ -13,6 +13,8 @@ pub struct ServerConfig {
     #[serde(default)]
     pub clerk: ClerkSection,
     #[serde(default)]
+    pub github: GithubSection,
+    #[serde(default)]
     pub tokens: TokensSection,
     #[serde(default)]
     pub limits: LimitsSection,
@@ -28,11 +30,23 @@ impl Default for ServerConfig {
             server: ServerSection::default(),
             database: DatabaseSection::default(),
             clerk: ClerkSection::default(),
+            github: GithubSection::default(),
             tokens: TokensSection::default(),
             limits: LimitsSection::default(),
             heartbeat: HeartbeatSection::default(),
             offline_response: OfflineResponseSection::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubSection {
+    pub repo: Option<String>,
+}
+
+impl Default for GithubSection {
+    fn default() -> Self {
+        Self { repo: None }
     }
 }
 

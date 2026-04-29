@@ -297,14 +297,28 @@ async fn regenerate_gateway(
     Redirect::to("/dashboard")
 }
 
-async fn install_script(headers: HeaderMap) -> impl IntoResponse {
+async fn install_script(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let base_url = extract_base_url(&headers);
+
+    let github_repo = match &state.config.github.repo {
+        Some(repo) => repo.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Install script not available: github.repo not configured",
+            )
+                .into_response();
+        }
+    };
 
     let script = format!(
         r#"#!/bin/bash
 set -e
 
-# Portal Client Installer
+# Portal Agent Installer
+# Downloads from GitHub releases: {github_repo}
+
+REPO="{github_repo}"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
@@ -331,35 +345,48 @@ case "$OS" in
         ;;
 esac
 
-BINARY_URL="{base_url}/releases/latest/${{OS}}-${{ARCH}}/portal"
+ASSET_NAME="portal-agent-${{OS}}-${{ARCH}}"
 INSTALL_DIR="/usr/local/bin"
 
-echo "Downloading Portal client..."
-echo "  URL: $BINARY_URL"
+echo "Fetching latest release from $REPO..."
+
+# Get latest release download URL
+RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    | grep "browser_download_url.*$ASSET_NAME\"" \
+    | cut -d '"' -f 4)
+
+if [ -z "$RELEASE_URL" ]; then
+    echo "Error: Could not find release asset for $ASSET_NAME"
+    echo "Check releases at: https://github.com/$REPO/releases"
+    exit 1
+fi
+
+echo "Downloading Portal agent..."
+echo "  URL: $RELEASE_URL"
 
 if command -v curl &> /dev/null; then
-    curl -fsSL "$BINARY_URL" -o /tmp/portal
+    curl -fsSL "$RELEASE_URL" -o /tmp/portal-agent
 elif command -v wget &> /dev/null; then
-    wget -q "$BINARY_URL" -O /tmp/portal
+    wget -q "$RELEASE_URL" -O /tmp/portal-agent
 else
     echo "Error: curl or wget required"
     exit 1
 fi
 
-chmod +x /tmp/portal
+chmod +x /tmp/portal-agent
 
 if [ -w "$INSTALL_DIR" ]; then
-    mv /tmp/portal "$INSTALL_DIR/portal"
+    mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
 else
     echo "Installing to $INSTALL_DIR (requires sudo)..."
-    sudo mv /tmp/portal "$INSTALL_DIR/portal"
+    sudo mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
 fi
 
 echo ""
-echo "Portal client installed successfully!"
+echo "Portal agent installed successfully!"
 echo ""
 echo "Usage:"
-echo "  portal daemon --key YOUR_DEVICE_KEY --server {base_url}"
+echo "  portal-agent --key YOUR_DEVICE_KEY --server {base_url}"
 echo ""
 "#
     );
@@ -368,4 +395,5 @@ echo ""
         [("Content-Type", "text/plain; charset=utf-8")],
         script,
     )
+        .into_response()
 }

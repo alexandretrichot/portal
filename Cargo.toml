@@ -63,5 +63,15 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
+# Database
+rusqlite = { version = "0.34", features = ["bundled"] }
+
+# Auth
+jsonwebtoken = "9"
+
+# Templates
+askama = "0.12"
+askama_axum = "0.4"
+
 # Internal crates
 common = { path = "crates/common" }
