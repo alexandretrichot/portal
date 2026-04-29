@@ -548,16 +548,16 @@ SYSTEMD
         echo "    Logs: journalctl --user -u portal-agent -f"
         echo "    Stop: systemctl --user stop portal-agent"
     else
-        # Linux without systemd (container, minimal install, etc.)
-        echo "==> systemd not available, running in background..."
-        pkill -f "portal-agent --server" 2>/dev/null || true
-        nohup /usr/local/bin/portal-agent --server "$SERVER_URL" --key "$DEVICE_KEY" > /tmp/portal-agent.log 2>&1 &
-        echo $! > /tmp/portal-agent.pid
-
-        echo "==> Agent started in background"
-        echo "    PID: $(cat /tmp/portal-agent.pid)"
-        echo "    Logs: tail -f /tmp/portal-agent.log"
-        echo "    Stop: kill \$(cat /tmp/portal-agent.pid)"
+        # Linux without systemd
+        echo ""
+        echo "==> systemd not available"
+        echo ""
+        echo "To run manually:"
+        echo "  portal-agent --server $SERVER_URL --key $DEVICE_KEY"
+        echo ""
+        echo "Or install systemd and re-run this script:"
+        echo "  apt install systemd"
+        echo ""
     fi
 fi
 
