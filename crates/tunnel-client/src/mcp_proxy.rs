@@ -14,6 +14,7 @@ use crate::config::McpServerConfig;
 pub struct McpProxyManager {
     configs: HashMap<String, McpServerConfig>,
     clients: Mutex<HashMap<String, Arc<Peer<RoleClient>>>>,
+    tool_to_server: Mutex<HashMap<String, String>>,
 }
 
 impl McpProxyManager {
@@ -21,15 +22,198 @@ impl McpProxyManager {
         Self {
             configs,
             clients: Mutex::new(HashMap::new()),
+            tool_to_server: Mutex::new(HashMap::new()),
         }
     }
 
     pub async fn forward_request(&self, req: McpRequestMessage) -> McpResponseMessage {
-        let target_name = req
-            .target_server
-            .as_ref()
-            .or_else(|| self.configs.keys().next())
-            .cloned();
+        let method = req.payload.get("method").and_then(|m| m.as_str());
+
+        match method {
+            Some("tools/list") => self.aggregate_tools_list(req).await,
+            Some("tools/call") => self.route_tool_call(req).await,
+            Some("resources/list") => self.aggregate_resources_list(req).await,
+            Some("prompts/list") => self.aggregate_prompts_list(req).await,
+            _ => self.forward_to_first(req).await,
+        }
+    }
+
+    async fn aggregate_tools_list(&self, req: McpRequestMessage) -> McpResponseMessage {
+        let id = req.payload.get("id").cloned();
+        let mut all_tools = Vec::new();
+        let mut tool_map = self.tool_to_server.lock().await;
+
+        for (name, config) in &self.configs {
+            if !config.is_stdio() {
+                continue;
+            }
+
+            let peer = match self.get_or_create_client(name, config).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Failed to connect to MCP server '{}': {}", name, e);
+                    continue;
+                }
+            };
+
+            match peer.list_tools(Default::default()).await {
+                Ok(result) => {
+                    for tool in &result.tools {
+                        tool_map.insert(tool.name.to_string(), name.clone());
+                    }
+                    all_tools.extend(result.tools);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to list tools from '{}': {}", name, e);
+                }
+            }
+        }
+
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "tools": all_tools }
+        });
+        McpResponseMessage::success(req.correlation_id, response)
+    }
+
+    async fn route_tool_call(&self, req: McpRequestMessage) -> McpResponseMessage {
+        let id = req.payload.get("id").cloned();
+        let params = req.payload.get("params");
+
+        let tool_name = params
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str());
+
+        let Some(tool_name) = tool_name else {
+            return McpResponseMessage::error(
+                req.correlation_id,
+                TunnelError::new(-32602, "Missing tool name"),
+            );
+        };
+
+        let server_name = {
+            let tool_map = self.tool_to_server.lock().await;
+            tool_map.get(tool_name).cloned()
+        };
+
+        let Some(server_name) = server_name else {
+            return McpResponseMessage::error(
+                req.correlation_id,
+                TunnelError::new(-32601, format!("Unknown tool: {}", tool_name)),
+            );
+        };
+
+        let config = match self.configs.get(&server_name) {
+            Some(c) => c,
+            None => {
+                return McpResponseMessage::error(
+                    req.correlation_id,
+                    TunnelError::new(-32603, format!("Server '{}' not found", server_name)),
+                );
+            }
+        };
+
+        let peer = match self.get_or_create_client(&server_name, config).await {
+            Ok(c) => c,
+            Err(e) => {
+                return McpResponseMessage::error(
+                    req.correlation_id,
+                    TunnelError::new(-32603, e),
+                );
+            }
+        };
+
+        let tool_params: CallToolRequestParams = match params {
+            Some(p) => match serde_json::from_value(p.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    return McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32602, format!("Invalid params: {}", e)),
+                    );
+                }
+            },
+            None => {
+                return McpResponseMessage::error(
+                    req.correlation_id,
+                    TunnelError::new(-32602, "Missing params"),
+                );
+            }
+        };
+
+        match peer.call_tool(tool_params).await {
+            Ok(result) => {
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result
+                });
+                McpResponseMessage::success(req.correlation_id, response)
+            }
+            Err(e) => McpResponseMessage::error(
+                req.correlation_id,
+                TunnelError::new(-32603, format!("tools/call failed: {}", e)),
+            ),
+        }
+    }
+
+    async fn aggregate_resources_list(&self, req: McpRequestMessage) -> McpResponseMessage {
+        let id = req.payload.get("id").cloned();
+        let mut all_resources = Vec::new();
+
+        for (name, config) in &self.configs {
+            if !config.is_stdio() {
+                continue;
+            }
+
+            let peer = match self.get_or_create_client(name, config).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if let Ok(result) = peer.list_resources(Default::default()).await {
+                all_resources.extend(result.resources);
+            }
+        }
+
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "resources": all_resources }
+        });
+        McpResponseMessage::success(req.correlation_id, response)
+    }
+
+    async fn aggregate_prompts_list(&self, req: McpRequestMessage) -> McpResponseMessage {
+        let id = req.payload.get("id").cloned();
+        let mut all_prompts = Vec::new();
+
+        for (name, config) in &self.configs {
+            if !config.is_stdio() {
+                continue;
+            }
+
+            let peer = match self.get_or_create_client(name, config).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if let Ok(result) = peer.list_prompts(Default::default()).await {
+                all_prompts.extend(result.prompts);
+            }
+        }
+
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "prompts": all_prompts }
+        });
+        McpResponseMessage::success(req.correlation_id, response)
+    }
+
+    async fn forward_to_first(&self, req: McpRequestMessage) -> McpResponseMessage {
+        let target_name = self.configs.keys().next().cloned();
 
         let Some(target_name) = target_name else {
             return McpResponseMessage::error(
@@ -38,21 +222,14 @@ impl McpProxyManager {
             );
         };
 
-        let Some(config) = self.configs.get(&target_name) else {
-            return McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32600, format!("MCP server '{}' not found", target_name)),
-            );
-        };
+        let config = self.configs.get(&target_name).unwrap();
 
         if config.is_stdio() {
             self.forward_stdio(req, &target_name, config).await
-        } else if config.is_http() {
-            self.forward_http(req, config).await
         } else {
             McpResponseMessage::error(
                 req.correlation_id,
-                TunnelError::new(-32600, "Invalid MCP server config: need command or url"),
+                TunnelError::new(-32600, "Only stdio servers supported"),
             )
         }
     }
@@ -96,125 +273,12 @@ impl McpProxyManager {
     async fn forward_stdio(
         &self,
         req: McpRequestMessage,
-        name: &str,
-        config: &McpServerConfig,
-    ) -> McpResponseMessage {
-        let peer = match self.get_or_create_client(name, config).await {
-            Ok(c) => c,
-            Err(e) => {
-                return McpResponseMessage::error(
-                    req.correlation_id,
-                    TunnelError::new(-32603, e),
-                );
-            }
-        };
-
-        let method = req.payload.get("method").and_then(|m| m.as_str());
-        let params = req.payload.get("params");
-        let id = req.payload.get("id").cloned();
-
-        match method {
-            Some("tools/list") => {
-                match peer.list_tools(Default::default()).await {
-                    Ok(result) => {
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": result
-                        });
-                        McpResponseMessage::success(req.correlation_id, response)
-                    }
-                    Err(e) => McpResponseMessage::error(
-                        req.correlation_id,
-                        TunnelError::new(-32603, format!("tools/list failed: {}", e)),
-                    ),
-                }
-            }
-            Some("tools/call") => {
-                let tool_params: CallToolRequestParams = match params {
-                    Some(p) => match serde_json::from_value(p.clone()) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return McpResponseMessage::error(
-                                req.correlation_id,
-                                TunnelError::new(-32602, format!("Invalid params: {}", e)),
-                            );
-                        }
-                    },
-                    None => {
-                        return McpResponseMessage::error(
-                            req.correlation_id,
-                            TunnelError::new(-32602, "Missing params for tools/call"),
-                        );
-                    }
-                };
-
-                match peer.call_tool(tool_params).await {
-                    Ok(result) => {
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": result
-                        });
-                        McpResponseMessage::success(req.correlation_id, response)
-                    }
-                    Err(e) => McpResponseMessage::error(
-                        req.correlation_id,
-                        TunnelError::new(-32603, format!("tools/call failed: {}", e)),
-                    ),
-                }
-            }
-            Some("resources/list") => {
-                match peer.list_resources(Default::default()).await {
-                    Ok(result) => {
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": result
-                        });
-                        McpResponseMessage::success(req.correlation_id, response)
-                    }
-                    Err(e) => McpResponseMessage::error(
-                        req.correlation_id,
-                        TunnelError::new(-32603, format!("resources/list failed: {}", e)),
-                    ),
-                }
-            }
-            Some("prompts/list") => {
-                match peer.list_prompts(Default::default()).await {
-                    Ok(result) => {
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": result
-                        });
-                        McpResponseMessage::success(req.correlation_id, response)
-                    }
-                    Err(e) => McpResponseMessage::error(
-                        req.correlation_id,
-                        TunnelError::new(-32603, format!("prompts/list failed: {}", e)),
-                    ),
-                }
-            }
-            Some(other) => McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32601, format!("Method not supported: {}", other)),
-            ),
-            None => McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32600, "Missing method in request"),
-            ),
-        }
-    }
-
-    async fn forward_http(
-        &self,
-        req: McpRequestMessage,
+        _name: &str,
         _config: &McpServerConfig,
     ) -> McpResponseMessage {
         McpResponseMessage::error(
             req.correlation_id,
-            TunnelError::new(-32600, "HTTP transport not yet implemented"),
+            TunnelError::new(-32601, "Method not supported"),
         )
     }
 }
