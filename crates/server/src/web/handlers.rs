@@ -519,12 +519,13 @@ PLIST
     echo "    Stop: launchctl unload $PLIST_PATH"
 
 elif [ "$OS" = "linux" ]; then
-    # Linux: systemd user service
-    SERVICE_DIR="$HOME/.config/systemd/user"
-    SERVICE_PATH="$SERVICE_DIR/portal-agent.service"
-    mkdir -p "$SERVICE_DIR"
+    if command -v systemctl &> /dev/null && systemctl --user status &> /dev/null; then
+        # Linux with systemd
+        SERVICE_DIR="$HOME/.config/systemd/user"
+        SERVICE_PATH="$SERVICE_DIR/portal-agent.service"
+        mkdir -p "$SERVICE_DIR"
 
-    cat > "$SERVICE_PATH" << SYSTEMD
+        cat > "$SERVICE_PATH" << SYSTEMD
 [Unit]
 Description=Portal Agent
 After=network.target
@@ -538,14 +539,26 @@ RestartSec=10
 WantedBy=default.target
 SYSTEMD
 
-    systemctl --user daemon-reload
-    systemctl --user enable portal-agent
-    systemctl --user restart portal-agent
+        systemctl --user daemon-reload
+        systemctl --user enable portal-agent
+        systemctl --user restart portal-agent
 
-    echo "==> Daemon installed and started (systemd)"
-    echo "    Status: systemctl --user status portal-agent"
-    echo "    Logs: journalctl --user -u portal-agent -f"
-    echo "    Stop: systemctl --user stop portal-agent"
+        echo "==> Daemon installed and started (systemd)"
+        echo "    Status: systemctl --user status portal-agent"
+        echo "    Logs: journalctl --user -u portal-agent -f"
+        echo "    Stop: systemctl --user stop portal-agent"
+    else
+        # Linux without systemd (container, minimal install, etc.)
+        echo "==> systemd not available, running in background..."
+        pkill -f "portal-agent --server" 2>/dev/null || true
+        nohup /usr/local/bin/portal-agent --server "$SERVER_URL" --key "$DEVICE_KEY" > /tmp/portal-agent.log 2>&1 &
+        echo $! > /tmp/portal-agent.pid
+
+        echo "==> Agent started in background"
+        echo "    PID: $(cat /tmp/portal-agent.pid)"
+        echo "    Logs: tail -f /tmp/portal-agent.log"
+        echo "    Stop: kill \$(cat /tmp/portal-agent.pid)"
+    fi
 fi
 
 echo ""
