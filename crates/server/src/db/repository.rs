@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task;
 use uuid::Uuid;
 
-use super::models::{Device, DeviceWithGateway, Gateway, User};
+use super::models::{Device, DeviceWithGateway, Gateway, McpConfig, User};
 
 #[derive(Clone)]
 pub struct Repository {
@@ -186,10 +186,11 @@ impl Repository {
             let id = Uuid::new_v4().to_string();
             let key = Self::generate_key();
             let now = Utc::now();
+            let mcp_config = McpConfig::default();
 
             conn.execute(
-                "INSERT INTO devices (id, gateway_id, key, name, alias, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                params![&id, &gateway_id, &key, &name, &alias, now.to_rfc3339()],
+                "INSERT INTO devices (id, gateway_id, key, name, alias, mcp_config, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![&id, &gateway_id, &key, &name, &alias, serde_json::to_string(&mcp_config)?, now.to_rfc3339()],
             )?;
 
             Ok(Device {
@@ -198,6 +199,7 @@ impl Repository {
                 key,
                 name,
                 alias,
+                mcp_config,
                 created_at: now,
             })
         })
@@ -212,12 +214,13 @@ impl Repository {
             let conn = conn.lock().unwrap();
             let result = conn
                 .query_row(
-                    "SELECT d.id, d.gateway_id, d.key, d.name, d.alias, d.created_at, g.key as gateway_key
+                    "SELECT d.id, d.gateway_id, d.key, d.name, d.alias, d.mcp_config, d.created_at, g.key as gateway_key
                      FROM devices d
                      JOIN gateways g ON d.gateway_id = g.id
                      WHERE d.key = ?",
                     params![&key],
                     |row| {
+                        let mcp_config_json: String = row.get(5)?;
                         Ok(DeviceWithGateway {
                             device: Device {
                                 id: row.get(0)?,
@@ -225,9 +228,10 @@ impl Repository {
                                 key: row.get(2)?,
                                 name: row.get(3)?,
                                 alias: row.get(4)?,
-                                created_at: Self::parse_datetime(&row.get::<_, String>(5)?),
+                                mcp_config: serde_json::from_str(&mcp_config_json).unwrap_or_default(),
+                                created_at: Self::parse_datetime(&row.get::<_, String>(6)?),
                             },
-                            gateway_key: row.get(6)?,
+                            gateway_key: row.get(7)?,
                         })
                     },
                 )
@@ -244,18 +248,20 @@ impl Repository {
         task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT id, gateway_id, key, name, alias, created_at FROM devices WHERE gateway_id = ? ORDER BY created_at DESC",
+                "SELECT id, gateway_id, key, name, alias, mcp_config, created_at FROM devices WHERE gateway_id = ? ORDER BY created_at DESC",
             )?;
 
             let devices = stmt
                 .query_map(params![&gateway_id], |row| {
+                    let mcp_config_json: String = row.get(5)?;
                     Ok(Device {
                         id: row.get(0)?,
                         gateway_id: row.get(1)?,
                         key: row.get(2)?,
                         name: row.get(3)?,
                         alias: row.get(4)?,
-                        created_at: Self::parse_datetime(&row.get::<_, String>(5)?),
+                        mcp_config: serde_json::from_str(&mcp_config_json).unwrap_or_default(),
+                        created_at: Self::parse_datetime(&row.get::<_, String>(6)?),
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -304,6 +310,23 @@ impl Repository {
             } else {
                 Ok(None)
             }
+        })
+        .await?
+    }
+
+    pub async fn update_mcp_config(&self, device_id: &str, gateway_id: &str, config: &McpConfig) -> Result<bool> {
+        let conn = self.conn.clone();
+        let device_id = device_id.to_string();
+        let gateway_id = gateway_id.to_string();
+        let config_json = serde_json::to_string(config)?;
+
+        task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let rows = conn.execute(
+                "UPDATE devices SET mcp_config = ? WHERE id = ? AND gateway_id = ?",
+                params![&config_json, &device_id, &gateway_id],
+            )?;
+            Ok(rows > 0)
         })
         .await?
     }

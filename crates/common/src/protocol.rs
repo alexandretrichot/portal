@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -6,13 +8,120 @@ use crate::TunnelError;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TunnelMessage {
+    // Auth
     Auth(AuthMessage),
     AuthResult(AuthResultMessage),
+
+    // MCP proxying
     McpRequest(McpRequestMessage),
     McpResponse(McpResponseMessage),
+
+    // Keepalive
     Ping(PingMessage),
     Pong(PongMessage),
+
+    // Lifecycle
     Disconnect(DisconnectMessage),
+
+    // Server → Agent: configuration & commands
+    Config(ConfigMessage),
+    Command(CommandMessage),
+
+    // Agent → Server: status & logs
+    Status(StatusMessage),
+    Log(LogMessage),
+}
+
+/// Server sends this after successful auth with MCP server configs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMessage {
+    pub mcp_servers: HashMap<String, McpServerConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Server sends commands to agent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandMessage {
+    pub id: Uuid,
+    pub command: AgentCommand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum AgentCommand {
+    /// Open system settings for a permission
+    OpenSettings { permission: String },
+    /// Restart the agent process
+    Restart,
+    /// Reload MCP servers with new config
+    ReloadConfig,
+    /// Restart a specific MCP server
+    RestartMcpServer { name: String },
+}
+
+/// Agent sends status updates
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusMessage {
+    pub diagnostics: Option<DiagnosticsInfo>,
+    pub mcp_servers: HashMap<String, McpServerStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsInfo {
+    pub os: String,
+    pub permissions: Vec<PermissionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionInfo {
+    pub name: String,
+    pub status: PermissionStatus,
+    pub settings_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionStatus {
+    Granted,
+    Denied,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerStatus {
+    pub running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+}
+
+/// Agent streams logs to server
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogMessage {
+    pub level: LogLevel,
+    pub target: String,
+    pub message: String,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

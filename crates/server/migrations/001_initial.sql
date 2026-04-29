@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS devices (
     key TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     alias TEXT NOT NULL,
+    mcp_config TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(gateway_id, alias)
 );

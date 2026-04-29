@@ -11,7 +11,7 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use common::{AuthResultMessage, PingMessage, TunnelMessage};
+use common::{AuthResultMessage, ConfigMessage, PingMessage, TunnelMessage};
 use uuid::Uuid;
 
 use crate::registry::ConnectionHandle;
@@ -129,6 +129,38 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
         return;
     }
 
+    // Send MCP server config to agent
+    let config_map = device_info
+        .device
+        .mcp_config
+        .servers
+        .into_iter()
+        .map(|(name, cfg)| {
+            (
+                name,
+                common::McpServerConfig {
+                    command: cfg.command,
+                    args: cfg.args,
+                    env: cfg.env,
+                    enabled: cfg.enabled,
+                },
+            )
+        })
+        .collect();
+
+    let config_msg = TunnelMessage::Config(ConfigMessage {
+        mcp_servers: config_map,
+    });
+
+    if sender
+        .send(Message::Text(serde_json::to_string(&config_msg).unwrap().into()))
+        .await
+        .is_err()
+    {
+        state.registry.unregister(&device_key);
+        return;
+    }
+
     let heartbeat_interval = Duration::from_secs(state.config.heartbeat.interval_secs);
     let mut heartbeat_timer = tokio::time::interval(heartbeat_interval);
     let mut ping_sequence: u64 = 0;
@@ -140,7 +172,7 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
                     Some(Ok(Message::Text(text))) => {
                         state.registry.update_last_seen(&device_key);
                         if let Ok(tunnel_msg) = serde_json::from_str::<TunnelMessage>(&text) {
-                            handle_client_message(tunnel_msg, &state).await;
+                            handle_client_message(tunnel_msg, &state, &device_info.device.id).await;
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {
@@ -186,7 +218,7 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
     tracing::info!(session_id = %session_id, "Connection closed");
 }
 
-async fn handle_client_message(msg: TunnelMessage, state: &AppState) {
+async fn handle_client_message(msg: TunnelMessage, state: &AppState, device_id: &str) {
     match msg {
         TunnelMessage::McpResponse(response) => {
             let correlation_id = response.correlation_id;
@@ -201,6 +233,24 @@ async fn handle_client_message(msg: TunnelMessage, state: &AppState) {
         }
         TunnelMessage::Disconnect(disconnect) => {
             tracing::info!(reason = ?disconnect.reason, "Client requested disconnect");
+        }
+        TunnelMessage::Status(status) => {
+            tracing::info!(
+                device_id = %device_id,
+                os = ?status.diagnostics.as_ref().map(|d| &d.os),
+                mcp_servers = ?status.mcp_servers.keys().collect::<Vec<_>>(),
+                "Device status update"
+            );
+            // TODO: Store status in registry or cache for dashboard
+        }
+        TunnelMessage::Log(log) => {
+            match log.level {
+                common::LogLevel::Error => tracing::error!(target = %log.target, device_id = %device_id, "{}", log.message),
+                common::LogLevel::Warn => tracing::warn!(target = %log.target, device_id = %device_id, "{}", log.message),
+                common::LogLevel::Info => tracing::info!(target = %log.target, device_id = %device_id, "{}", log.message),
+                common::LogLevel::Debug => tracing::debug!(target = %log.target, device_id = %device_id, "{}", log.message),
+            }
+            // TODO: Store logs for dashboard
         }
         _ => {}
     }
