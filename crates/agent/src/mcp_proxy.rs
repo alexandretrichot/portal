@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use common::{McpRequestMessage, McpResponseMessage, TunnelError};
 use common::commands::McpServerStatus;
 
+use crate::native_tools::NativeTools;
 use crate::config::McpServerConfig;
 
 pub struct McpProxyManager {
@@ -17,6 +18,7 @@ pub struct McpProxyManager {
     clients: Mutex<HashMap<String, Arc<Peer<RoleClient>>>>,
     tool_to_server: Mutex<HashMap<String, String>>,
     errors: Mutex<HashMap<String, String>>,
+    native_tools: NativeTools,
 }
 
 impl McpProxyManager {
@@ -26,6 +28,7 @@ impl McpProxyManager {
             clients: Mutex::new(HashMap::new()),
             tool_to_server: Mutex::new(HashMap::new()),
             errors: Mutex::new(HashMap::new()),
+            native_tools: NativeTools::new(),
         }
     }
 
@@ -78,6 +81,14 @@ impl McpProxyManager {
         let mut all_tools = Vec::new();
         let mut tool_map = self.tool_to_server.lock().await;
 
+        // Add builtin tools first
+        let builtin_tools = self.native_tools.get_tools();
+        for tool in &builtin_tools {
+            tool_map.insert(tool.name.to_string(), "__native__".to_string());
+        }
+        all_tools.extend(builtin_tools);
+
+        // Add tools from external MCP servers
         for (name, config) in &self.configs {
             if !config.is_stdio() {
                 continue;
@@ -139,6 +150,45 @@ impl McpProxyManager {
             );
         };
 
+        // Handle builtin tools
+        if server_name == "__native__" {
+            let tool_params: CallToolRequestParams = match params {
+                Some(p) => match serde_json::from_value(p.clone()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return McpResponseMessage::error(
+                            req.correlation_id,
+                            TunnelError::new(-32602, format!("Invalid params: {}", e)),
+                        );
+                    }
+                },
+                None => {
+                    return McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32602, "Missing params"),
+                    );
+                }
+            };
+
+            match self.native_tools.handle_tool_call(tool_params).await {
+                Ok(result) => {
+                    let response = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    });
+                    return McpResponseMessage::success(req.correlation_id, response);
+                }
+                Err(e) => {
+                    return McpResponseMessage::error(
+                        req.correlation_id,
+                        TunnelError::new(-32603, format!("Builtin tool failed: {:?}", e)),
+                    );
+                }
+            }
+        }
+
+        // Handle external MCP server tools
         let config = match self.configs.get(&server_name) {
             Some(c) => c,
             None => {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorData, Tool, Content, JsonObject};
 use serde_json::json;
 
-use crate::db;
+use super::db;
 
 fn make_tool(name: &'static str, description: &'static str, schema: serde_json::Value) -> Tool {
     let schema_obj: JsonObject = schema.as_object().cloned().unwrap_or_default();

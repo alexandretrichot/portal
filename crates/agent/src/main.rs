@@ -1,4 +1,5 @@
 mod config;
+mod native_tools;
 pub mod diagnostics;
 mod handler;
 mod mcp_proxy;
