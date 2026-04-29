@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use tokio::sync::oneshot;
-use tunnel_common::McpResponseMessage;
+use common::McpResponseMessage;
 use uuid::Uuid;
 
 pub struct PendingRequests {

@@ -7,7 +7,7 @@ use rmcp::{
     transport::TokioChildProcess,
 };
 use tokio::sync::Mutex;
-use tunnel_common::{McpRequestMessage, McpResponseMessage, TunnelError};
+use common::{McpRequestMessage, McpResponseMessage, TunnelError};
 
 use crate::config::McpServerConfig;
 

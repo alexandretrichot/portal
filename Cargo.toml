@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/tunnel-common",
-    "crates/tunnel-client",
-    "crates/tunnel-server",
-    "crates/tunnel-cli",
+    "crates/common",
+    "crates/client",
+    "crates/server",
+    "crates/cli",
     "crates/mcp-imessage",
 ]
 resolver = "2"
@@ -64,4 +64,4 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 chrono = { version = "0.4", features = ["serde"] }
 
 # Internal crates
-tunnel-common = { path = "crates/tunnel-common" }
+common = { path = "crates/common" }

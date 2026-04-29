@@ -6,7 +6,7 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tunnel_common::{AuthMessage, PongMessage, TunnelMessage};
+use common::{AuthMessage, PongMessage, TunnelMessage};
 
 use crate::config::TunnelServerConfig;
 use crate::mcp_proxy::McpProxyManager;

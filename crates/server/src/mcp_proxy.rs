@@ -44,7 +44,7 @@ impl TunnelProxyServer {
             "params": params,
         });
 
-        let mcp_request = tunnel_common::TunnelMessage::McpRequest(tunnel_common::McpRequestMessage {
+        let mcp_request = common::TunnelMessage::McpRequest(common::McpRequestMessage {
             correlation_id,
             payload,
             target_server: None,

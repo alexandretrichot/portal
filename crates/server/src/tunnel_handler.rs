@@ -11,7 +11,7 @@ use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tunnel_common::{AuthResultMessage, PingMessage, TunnelMessage};
+use common::{AuthResultMessage, PingMessage, TunnelMessage};
 use uuid::Uuid;
 
 use crate::registry::ConnectionHandle;

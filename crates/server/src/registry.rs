@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tunnel_common::TunnelMessage;
+use common::TunnelMessage;
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct TokenHash(String);
@@ -66,8 +66,8 @@ impl ConnectionRegistry {
         let hash = TokenHash::from_token(token);
 
         if let Some(old) = self.connections.remove(&hash) {
-            let disconnect_msg = TunnelMessage::Disconnect(tunnel_common::DisconnectMessage {
-                reason: tunnel_common::DisconnectReason::TokenRevoked,
+            let disconnect_msg = TunnelMessage::Disconnect(common::DisconnectMessage {
+                reason: common::DisconnectReason::TokenRevoked,
                 message: Some("New connection established".into()),
             });
             let _ = old.1.sender.send(disconnect_msg).await;
