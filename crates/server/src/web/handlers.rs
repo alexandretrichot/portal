@@ -517,6 +517,8 @@ PLIST
     echo "==> Daemon installed and started (launchd)"
     echo "    Logs: /tmp/portal-agent.log"
     echo "    Stop: launchctl unload $PLIST_PATH"
+    echo ""
+    echo "Portal agent is now running!"
 
 elif [ "$OS" = "linux" ]; then
     if command -v systemctl &> /dev/null && systemctl --user status &> /dev/null; then
@@ -547,6 +549,8 @@ SYSTEMD
         echo "    Status: systemctl --user status portal-agent"
         echo "    Logs: journalctl --user -u portal-agent -f"
         echo "    Stop: systemctl --user stop portal-agent"
+        echo ""
+        echo "Portal agent is now running!"
     else
         # Linux without systemd
         echo ""
@@ -557,12 +561,8 @@ SYSTEMD
         echo ""
         echo "Or install systemd and re-run this script:"
         echo "  apt install systemd"
-        echo ""
     fi
 fi
-
-echo ""
-echo "Portal agent is now running!"
 echo ""
 "#
     );
