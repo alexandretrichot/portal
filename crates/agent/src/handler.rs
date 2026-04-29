@@ -48,8 +48,8 @@ impl AgentHandler {
         tracing::info!("MCP config applied");
     }
 
-    pub async fn get_mcp_manager(&self) -> Option<Arc<RwLock<Option<McpProxyManager>>>> {
-        Some(self.mcp_manager.clone())
+    pub fn get_mcp_manager_ref(&self) -> Arc<RwLock<Option<McpProxyManager>>> {
+        self.mcp_manager.clone()
     }
 }
 

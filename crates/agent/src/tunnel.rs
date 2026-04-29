@@ -128,6 +128,7 @@ impl TunnelConnection {
 
         // Create handler and dispatcher
         let handler = AgentHandler::new().with_sender(sender.clone());
+        let mcp_manager = handler.get_mcp_manager_ref();
         let dispatcher = Dispatcher::new(handler);
 
         // Main event loop
@@ -149,7 +150,7 @@ impl TunnelConnection {
                             }
                             // Try legacy protocol
                             else if let Ok(tunnel_msg) = serde_json::from_str::<TunnelMessage>(&text) {
-                                self.handle_legacy_message(tunnel_msg, &mut write, &dispatcher).await?;
+                                self.handle_legacy_message(tunnel_msg, &mut write, &dispatcher, &mcp_manager).await?;
                             }
                         }
                         Some(Ok(WsMessage::Ping(data))) => {
@@ -180,6 +181,7 @@ impl TunnelConnection {
         msg: TunnelMessage,
         write: &mut S,
         dispatcher: &Dispatcher<AgentHandler>,
+        mcp_manager: &Arc<tokio::sync::RwLock<Option<crate::mcp_proxy::McpProxyManager>>>,
     ) -> Result<()>
     where
         S: SinkExt<WsMessage, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -252,8 +254,21 @@ impl TunnelConnection {
                 );
             }
             TunnelMessage::McpRequest(req) => {
-                // TODO: Handle MCP requests via the handler
                 tracing::debug!(correlation_id = %req.correlation_id, "MCP request received");
+                let response = {
+                    let manager = mcp_manager.read().await;
+                    if let Some(mgr) = manager.as_ref() {
+                        mgr.forward_request(req.clone()).await
+                    } else {
+                        common::McpResponseMessage::error(
+                            req.correlation_id,
+                            common::TunnelError::new(-32603, "MCP not initialized"),
+                        )
+                    }
+                };
+                let msg = TunnelMessage::McpResponse(response);
+                let text = serde_json::to_string(&msg)?;
+                write.send(WsMessage::Text(text.into())).await?;
             }
             _ => {}
         }
