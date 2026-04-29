@@ -27,22 +27,12 @@ impl AgentHandler {
     }
 
     pub async fn apply_config(&self, config: HashMap<String, McpServerConfig>) {
-        let agent_config: HashMap<String, crate::config::McpServerConfig> = config
+        let enabled_config: HashMap<String, McpServerConfig> = config
             .into_iter()
-            .filter(|(_, cfg)| cfg.enabled)
-            .map(|(name, cfg)| {
-                (
-                    name,
-                    crate::config::McpServerConfig {
-                        command: Some(cfg.command),
-                        args: cfg.args,
-                        env: cfg.env,
-                    },
-                )
-            })
+            .filter(|(_, cfg)| cfg.is_enabled())
             .collect();
 
-        let manager = McpProxyManager::new(agent_config);
+        let manager = McpProxyManager::new(enabled_config);
         *self.mcp_manager.write().await = Some(manager);
 
         tracing::info!("MCP config applied");

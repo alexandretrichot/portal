@@ -30,21 +30,7 @@ pub struct ServerConfig {
     pub key: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpServerConfig {
-    pub command: Option<String>,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-}
-
-impl McpServerConfig {
-    pub fn is_stdio(&self) -> bool {
-        self.command.is_some()
-    }
-}
+pub use common::commands::McpServerConfig;
 
 pub fn load_config(path: &Path) -> Result<AgentConfig> {
     if !path.exists() {

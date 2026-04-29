@@ -91,15 +91,37 @@ pub struct UpdateMcpConfig {
     pub servers: HashMap<String, McpServerConfig>,
 }
 
+/// MCP server configuration - either stdio (command) or http (url)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerConfig {
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum McpServerConfig {
+    /// Stdio-based MCP server (spawns a process)
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: HashMap<String, String>,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+    /// HTTP-based MCP server (connects to URL)
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+}
+
+impl McpServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            McpServerConfig::Stdio { enabled, .. } => *enabled,
+            McpServerConfig::Http { enabled, .. } => *enabled,
+        }
+    }
 }
 
 fn default_true() -> bool {

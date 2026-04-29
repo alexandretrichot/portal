@@ -40,20 +40,45 @@ pub struct McpConfig {
     pub servers: HashMap<String, McpServerConfig>,
 }
 
+/// Configuration for a single MCP server (stdio or http)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[schemars(description = "Configuration for a single MCP server")]
-pub struct McpServerConfig {
-    /// Command to execute (e.g., "npx", "uvx", "/path/to/binary")
-    pub command: String,
-    /// Arguments to pass to the command
-    #[serde(default)]
-    pub args: Vec<String>,
-    /// Environment variables (e.g., API keys)
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    /// Whether this server is enabled
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+#[serde(tag = "type", rename_all = "lowercase")]
+#[schemars(description = "MCP server configuration - either stdio (command) or http (url)")]
+pub enum McpServerConfig {
+    /// Stdio-based MCP server (spawns a process)
+    Stdio {
+        /// Command to execute (e.g., "npx", "uvx", "/path/to/binary")
+        command: String,
+        /// Arguments to pass to the command
+        #[serde(default)]
+        args: Vec<String>,
+        /// Environment variables (e.g., API keys)
+        #[serde(default)]
+        env: HashMap<String, String>,
+        /// Whether this server is enabled
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+    /// HTTP-based MCP server (connects to URL)
+    Http {
+        /// URL of the MCP server
+        url: String,
+        /// HTTP headers (e.g., Authorization)
+        #[serde(default)]
+        headers: HashMap<String, String>,
+        /// Whether this server is enabled
+        #[serde(default = "default_true")]
+        enabled: bool,
+    },
+}
+
+impl McpServerConfig {
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            McpServerConfig::Stdio { enabled, .. } => *enabled,
+            McpServerConfig::Http { enabled, .. } => *enabled,
+        }
+    }
 }
 
 fn default_true() -> bool {
