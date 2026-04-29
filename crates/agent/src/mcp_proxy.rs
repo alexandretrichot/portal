@@ -8,6 +8,7 @@ use rmcp::{
 };
 use tokio::sync::Mutex;
 use common::{McpRequestMessage, McpResponseMessage, TunnelError};
+use common::commands::McpServerStatus;
 
 use crate::config::McpServerConfig;
 
@@ -15,6 +16,7 @@ pub struct McpProxyManager {
     configs: HashMap<String, McpServerConfig>,
     clients: Mutex<HashMap<String, Arc<Peer<RoleClient>>>>,
     tool_to_server: Mutex<HashMap<String, String>>,
+    errors: Mutex<HashMap<String, String>>,
 }
 
 impl McpProxyManager {
@@ -23,7 +25,40 @@ impl McpProxyManager {
             configs,
             clients: Mutex::new(HashMap::new()),
             tool_to_server: Mutex::new(HashMap::new()),
+            errors: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub async fn get_status(&self) -> HashMap<String, McpServerStatus> {
+        let clients = self.clients.lock().await;
+        let errors = self.errors.lock().await;
+
+        self.configs
+            .keys()
+            .map(|name| {
+                let running = clients.contains_key(name);
+                let error = errors.get(name).cloned();
+
+                (
+                    name.clone(),
+                    McpServerStatus {
+                        running,
+                        error,
+                        pid: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub async fn restart_server(&self, name: &str) {
+        let mut clients = self.clients.lock().await;
+        clients.remove(name);
+
+        let mut errors = self.errors.lock().await;
+        errors.remove(name);
+
+        tracing::info!(server = %name, "MCP server will restart on next request");
     }
 
     pub async fn forward_request(&self, req: McpRequestMessage) -> McpResponseMessage {

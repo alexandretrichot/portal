@@ -1,16 +1,14 @@
 mod config;
 pub mod diagnostics;
+mod handler;
 mod mcp_proxy;
 mod tunnel;
-
-use std::sync::Arc;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::{AgentConfig, ServerConfig};
-use crate::mcp_proxy::McpProxyManager;
 use crate::tunnel::TunnelConnection;
 
 fn default_config_path() -> std::path::PathBuf {
@@ -177,14 +175,10 @@ async fn run_agent(args: Args, config_path: &std::path::Path) -> Result<()> {
     tracing::info!(
         server = %server_config.url,
         device_name = ?config.device_name,
-        mcp_servers = config.mcp_servers.len(),
         "Starting Portal agent"
     );
 
-    let mcp_manager = Arc::new(McpProxyManager::new(config.mcp_servers));
-
-    let tunnel = TunnelConnection::new(server_config, config.device_name, mcp_manager);
-
+    let tunnel = TunnelConnection::new(server_config, config.device_name);
     tunnel.run().await?;
 
     Ok(())

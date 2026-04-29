@@ -6,7 +6,8 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use common::TunnelMessage;
+use common::commands::DiagnosticsResponse;
+use common::{Message, TunnelMessage};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct DeviceKey(pub String);
@@ -26,6 +27,7 @@ pub struct ConnectionHandle {
     pub connected_at_utc: DateTime<Utc>,
     pub device_name: Option<String>,
     pub sender: mpsc::Sender<TunnelMessage>,
+    pub transport_sender: mpsc::Sender<Message>,
     pub last_seen: Arc<AtomicU64>,
 }
 
@@ -40,6 +42,7 @@ impl Clone for ConnectionHandle {
             connected_at_utc: self.connected_at_utc,
             device_name: self.device_name.clone(),
             sender: self.sender.clone(),
+            transport_sender: self.transport_sender.clone(),
             last_seen: self.last_seen.clone(),
         }
     }
@@ -52,10 +55,18 @@ pub struct DeviceInfo {
     pub last_seen: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeviceStatus {
+    pub online: bool,
+    pub diagnostics: Option<DiagnosticsResponse>,
+    pub last_diagnostics_at: Option<DateTime<Utc>>,
+}
+
 pub struct ConnectionRegistry {
     connections: DashMap<DeviceKey, ConnectionHandle>,
     gateway_devices: DashMap<String, HashSet<String>>,
     device_info: DashMap<String, DeviceInfo>,
+    device_status: DashMap<String, DeviceStatus>,
 }
 
 impl ConnectionRegistry {
@@ -64,6 +75,44 @@ impl ConnectionRegistry {
             connections: DashMap::new(),
             gateway_devices: DashMap::new(),
             device_info: DashMap::new(),
+            device_status: DashMap::new(),
+        }
+    }
+
+    pub fn update_diagnostics(&self, device_id: &str, diagnostics: DiagnosticsResponse) {
+        self.device_status
+            .entry(device_id.to_string())
+            .and_modify(|status| {
+                status.diagnostics = Some(diagnostics.clone());
+                status.last_diagnostics_at = Some(Utc::now());
+            })
+            .or_insert(DeviceStatus {
+                online: self.is_device_online(device_id),
+                diagnostics: Some(diagnostics),
+                last_diagnostics_at: Some(Utc::now()),
+            });
+    }
+
+    pub fn get_device_status(&self, device_id: &str) -> DeviceStatus {
+        self.device_status
+            .get(device_id)
+            .map(|s| s.clone())
+            .unwrap_or(DeviceStatus {
+                online: self.is_device_online(device_id),
+                diagnostics: None,
+                last_diagnostics_at: None,
+            })
+    }
+
+    fn is_device_online(&self, device_id: &str) -> bool {
+        self.connections.iter().any(|c| c.device_id == device_id)
+    }
+
+    pub async fn send_command(&self, device_key: &str, msg: Message) -> bool {
+        if let Some(handle) = self.get(device_key) {
+            handle.transport_sender.send(msg).await.is_ok()
+        } else {
+            false
         }
     }
 

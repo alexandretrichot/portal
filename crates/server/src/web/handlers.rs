@@ -2,12 +2,15 @@ use askama::Template;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect},
+    response::{Html, IntoResponse, Json, Redirect},
     routing::{get, post},
     Form, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
+use common::commands::GetDiagnostics;
+use common::{Command, Message};
 use crate::auth::middleware::AuthUser;
 use crate::AppState;
 
@@ -36,6 +39,10 @@ pub fn router() -> Router<AppState> {
         .route("/gateway/regenerate", post(regenerate_gateway))
         .route("/install.sh", get(install_script))
         .route("/install/{device_key}", get(device_install_script))
+        // API endpoints for device management
+        .route("/api/devices/{key}/doctor", post(device_doctor))
+        .route("/api/devices/{key}/restart", post(device_restart))
+        .route("/api/devices/{key}/status", get(device_status))
 }
 
 async fn index() -> Redirect {
@@ -568,4 +575,99 @@ echo ""
         script,
     )
         .into_response()
+}
+
+// =============================================================================
+// API Endpoints
+// =============================================================================
+
+#[derive(Serialize)]
+struct ApiResponse<T> {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl<T: Serialize> ApiResponse<T> {
+    fn ok(data: T) -> Json<Self> {
+        Json(Self {
+            success: true,
+            data: Some(data),
+            error: None,
+        })
+    }
+
+    fn err(msg: impl Into<String>) -> Json<Self> {
+        Json(Self {
+            success: false,
+            data: None,
+            error: Some(msg.into()),
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct DeviceStatusResponse {
+    online: bool,
+    diagnostics: Option<common::commands::DiagnosticsResponse>,
+}
+
+async fn device_status(
+    State(state): State<AppState>,
+    Path(device_key): Path<String>,
+) -> impl IntoResponse {
+    let status = state.registry.get_device_status(&device_key);
+
+    ApiResponse::ok(DeviceStatusResponse {
+        online: state.registry.is_online(&device_key),
+        diagnostics: status.diagnostics,
+    })
+}
+
+async fn device_doctor(
+    State(state): State<AppState>,
+    Path(device_key): Path<String>,
+) -> impl IntoResponse {
+    if !state.registry.is_online(&device_key) {
+        return ApiResponse::<serde_json::Value>::err("Device is offline");
+    }
+
+    // Send GetDiagnostics command
+    let request_id = Uuid::new_v4();
+    let msg = Message::Request {
+        id: request_id,
+        name: GetDiagnostics::NAME.to_string(),
+        payload: serde_json::json!({}),
+    };
+
+    if !state.registry.send_command(&device_key, msg).await {
+        return ApiResponse::err("Failed to send command");
+    }
+
+    ApiResponse::ok(serde_json::json!({"message": "Diagnostics requested"}))
+}
+
+async fn device_restart(
+    State(state): State<AppState>,
+    Path(device_key): Path<String>,
+) -> impl IntoResponse {
+    if !state.registry.is_online(&device_key) {
+        return ApiResponse::<serde_json::Value>::err("Device is offline");
+    }
+
+    // Send RestartAgent command
+    let request_id = Uuid::new_v4();
+    let msg = Message::Request {
+        id: request_id,
+        name: "restart_agent".to_string(),
+        payload: serde_json::json!({}),
+    };
+
+    if !state.registry.send_command(&device_key, msg).await {
+        return ApiResponse::err("Failed to send command");
+    }
+
+    ApiResponse::ok(serde_json::json!({"message": "Restart requested"}))
 }

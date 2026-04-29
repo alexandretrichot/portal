@@ -35,18 +35,7 @@ pub enum TunnelMessage {
 /// Server sends this after successful auth with MCP server configs
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigMessage {
-    pub mcp_servers: HashMap<String, McpServerConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerConfig {
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    #[serde(default)]
-    pub enabled: bool,
+    pub mcp_servers: HashMap<String, crate::commands::McpServerConfig>,
 }
 
 /// Server sends commands to agent

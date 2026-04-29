@@ -87,6 +87,7 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
     };
 
     let (tx, mut rx) = mpsc::channel::<TunnelMessage>(100);
+    let (transport_tx, mut transport_rx) = mpsc::channel::<common::Message>(100);
     let session_id = Uuid::new_v4().to_string();
 
     let handle = ConnectionHandle {
@@ -98,6 +99,7 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
         connected_at_utc: Utc::now(),
         device_name: auth.device_name.clone(),
         sender: tx,
+        transport_sender: transport_tx,
         last_seen: Arc::new(AtomicU64::new(Utc::now().timestamp() as u64)),
     };
 
@@ -193,6 +195,17 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
                 match msg {
                     Some(tunnel_msg) => {
                         let text = serde_json::to_string(&tunnel_msg).unwrap();
+                        if sender.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            msg = transport_rx.recv() => {
+                match msg {
+                    Some(transport_msg) => {
+                        let text = serde_json::to_string(&transport_msg).unwrap();
                         if sender.send(Message::Text(text.into())).await.is_err() {
                             break;
                         }
