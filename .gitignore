@@ -6,3 +6,4 @@ Cargo.lock
 config/client.json
 config/server.json
 tokens.txt
+portal.db

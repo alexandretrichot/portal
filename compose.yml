@@ -1,0 +1,11 @@
+services:
+  portal-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      - RUST_LOG=info
+      - PORT=8080
+      - HOST=0.0.0.0

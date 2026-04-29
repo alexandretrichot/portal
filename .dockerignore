@@ -1,0 +1,12 @@
+target/
+.git/
+.gitignore
+*.md
+.env
+*.pem
+*.key
+config/*.json
+tokens.txt
+releases/
+infra/
+scripts/
