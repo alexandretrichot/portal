@@ -173,7 +173,13 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         state.registry.update_last_seen(&device_key);
-                        if let Ok(tunnel_msg) = serde_json::from_str::<TunnelMessage>(&text) {
+
+                        // Try transport protocol first
+                        if let Ok(transport_msg) = serde_json::from_str::<common::Message>(&text) {
+                            handle_transport_message(transport_msg, &state, &device_info.device.id).await;
+                        }
+                        // Fall back to legacy protocol
+                        else if let Ok(tunnel_msg) = serde_json::from_str::<TunnelMessage>(&text) {
                             handle_client_message(tunnel_msg, &state, &device_info.device.id).await;
                         }
                     }
@@ -264,6 +270,44 @@ async fn handle_client_message(msg: TunnelMessage, state: &AppState, device_id: 
                 common::LogLevel::Debug => tracing::debug!(target = %log.target, device_id = %device_id, "{}", log.message),
             }
             // TODO: Store logs for dashboard
+        }
+        _ => {}
+    }
+}
+
+async fn handle_transport_message(msg: common::Message, state: &AppState, device_id: &str) {
+    match msg {
+        common::Message::Event { name, payload } => {
+            match name.as_str() {
+                "diagnostics" => {
+                    if let Ok(diag) = serde_json::from_value::<common::commands::DiagnosticsResponse>(payload) {
+                        tracing::info!(
+                            device_id = %device_id,
+                            os = %diag.os,
+                            permissions = ?diag.permissions.iter().map(|p| (&p.name, &p.status)).collect::<Vec<_>>(),
+                            "Received diagnostics"
+                        );
+                        state.registry.update_diagnostics(device_id, diag);
+                    }
+                }
+                "agent_ready" => {
+                    tracing::info!(device_id = %device_id, "Agent ready");
+                }
+                _ => {
+                    tracing::debug!(device_id = %device_id, event = %name, "Unknown event");
+                }
+            }
+        }
+        common::Message::Response { id, payload, error } => {
+            // Handle responses to commands we sent
+            if let Some(err) = error {
+                tracing::warn!(device_id = %device_id, id = %id, error = %err, "Command failed");
+            } else if let Some(payload) = payload {
+                // Check if this is a diagnostics response
+                if let Ok(diag) = serde_json::from_value::<common::commands::DiagnosticsResponse>(payload) {
+                    state.registry.update_diagnostics(device_id, diag);
+                }
+            }
         }
         _ => {}
     }

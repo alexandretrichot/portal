@@ -43,56 +43,132 @@
             No devices yet. Create one to connect your machines.
         </div>
         {% else %}
-        <div class="table-responsive">
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Alias</th>
-                        <th>Status</th>
-                        <th>Install Command</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for device in devices %}
-                    <tr>
-                        <td>{{ device.name }}</td>
-                        <td><code>{{ device.alias }}</code></td>
-                        <td>
+        <div class="row">
+            {% for device in devices %}
+            <div class="col-12 mb-3">
+                <div class="card {% if device.has_issues %}border-warning{% endif %}">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <div>
+                            <strong>{{ device.name }}</strong>
+                            <code class="ms-2">{{ device.alias }}</code>
+                        </div>
+                        <div>
                             {% if device.is_online %}
-                            <span class="device-online">Online</span>
+                            <span class="badge bg-success">Online</span>
                             {% else %}
-                            <span class="device-offline">Offline</span>
+                            <span class="badge bg-secondary">Offline</span>
                             {% endif %}
-                        </td>
-                        <td>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        {% if device.is_online %}
+                            {% if device.has_issues %}
+                            <div class="alert alert-warning mb-3">
+                                <h5 class="alert-heading mb-3">Setup required</h5>
+                                <p>Portal needs permission to access data on your Mac. This is a one-time setup.</p>
+
+                                {% for perm in device.permissions %}
+                                {% if !perm.granted %}
+                                <div class="card mb-3">
+                                    <div class="card-body">
+                                        {% if perm.name == "full_disk_access" %}
+                                        <h6 class="card-title">Step 1: Allow access to your files</h6>
+                                        <p class="card-text text-muted small mb-3">
+                                            This lets Portal read your Messages, Mail, and other app data so AI can help you with them.
+                                        </p>
+                                        <div class="bg-light rounded p-3 mb-3">
+                                            <strong>How to enable:</strong>
+                                            <ol class="mb-0 mt-2">
+                                                <li>Click the button below to open System Settings</li>
+                                                <li>Click the <strong>+</strong> button at the bottom of the list</li>
+                                                <li>Go to <strong>Applications → Utilities</strong></li>
+                                                <li>Select <strong>Terminal</strong> (or iTerm if you use that) and click Open</li>
+                                                <li>Make sure the switch next to it is <strong>ON</strong></li>
+                                                <li>Restart Portal Agent (it will reconnect automatically)</li>
+                                            </ol>
+                                        </div>
+                                        {% else if perm.name == "accessibility" %}
+                                        <h6 class="card-title">Step 2: Allow automation control</h6>
+                                        <p class="card-text text-muted small mb-3">
+                                            This lets Portal control apps on your Mac, like clicking buttons or typing text.
+                                        </p>
+                                        <div class="bg-light rounded p-3 mb-3">
+                                            <strong>How to enable:</strong>
+                                            <ol class="mb-0 mt-2">
+                                                <li>Click the button below - a system popup should appear</li>
+                                                <li>Click <strong>"Open System Settings"</strong> in the popup</li>
+                                                <li>Find <strong>Portal Agent</strong> in the list and toggle it <strong>ON</strong></li>
+                                            </ol>
+                                        </div>
+                                        {% else %}
+                                        <h6 class="card-title">{{ perm.name }}</h6>
+                                        <p class="card-text text-muted small mb-3">
+                                            This permission is required for Portal to work correctly.
+                                        </p>
+                                        {% endif %}
+
+                                        {% if perm.settings_url.is_some() %}
+                                        <button class="btn btn-primary btn-sm"
+                                                onclick="openSettings('{{ device.key }}', '{{ perm.name }}')">
+                                            Open System Settings
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% endif %}
+                                {% endfor %}
+
+                                <div class="mt-3 pt-3 border-top">
+                                    <p class="mb-2"><strong>Done with the steps above?</strong></p>
+                                    <button class="btn btn-success" onclick="checkDevice('{{ device.key }}')">
+                                        Restart and verify
+                                    </button>
+                                    <small class="text-muted d-block mt-2">This will restart the agent to pick up the new permissions.</small>
+                                </div>
+                            </div>
+                            {% else if !device.permissions.is_empty() %}
+                            <div class="alert alert-success mb-3">
+                                <strong>All permissions granted</strong>
+                            </div>
+                            {% else %}
+                            <div class="alert alert-info mb-3">
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                                Checking permissions...
+                            </div>
+                            {% endif %}
+                        {% else %}
+                        <p class="text-muted mb-3">Device is offline. Install and run the agent:</p>
+                        {% endif %}
+
+                        <div class="mb-3">
+                            <label class="form-label small text-muted">Install command</label>
                             <div class="d-flex align-items-center gap-2">
-                                <code class="key-display small text-truncate" style="max-width: 300px;">curl -fsSL {{ base_url }}/install/{{ device.key }} | bash</code>
+                                <code class="key-display small flex-grow-1 text-truncate">curl -fsSL {{ base_url }}/install/{{ device.key }} | bash</code>
                                 <button class="btn btn-outline-secondary btn-sm copy-btn"
                                         onclick="copyToClipboard('curl -fsSL {{ base_url }}/install/{{ device.key }} | bash', this)">
                                     Copy
                                 </button>
                             </div>
-                        </td>
-                        <td>
+                        </div>
+
+                        <div class="d-flex gap-2">
                             <form method="post" action="/devices/{{ device.id }}/regenerate" class="d-inline">
-                                <button type="submit" class="btn btn-warning btn-sm"
+                                <button type="submit" class="btn btn-outline-warning btn-sm"
                                         onclick="return confirm('Regenerate key? The device will need to reconnect.')">
-                                    Regenerate
+                                    Regenerate Key
                                 </button>
                             </form>
                             <form method="post" action="/devices/{{ device.id }}/delete" class="d-inline">
-                                <button type="submit" class="btn btn-danger btn-sm"
+                                <button type="submit" class="btn btn-outline-danger btn-sm"
                                         onclick="return confirm('Delete this device?')">
                                     Delete
                                 </button>
                             </form>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
         </div>
         {% endif %}
     </div>
@@ -127,4 +203,56 @@
         </div>
     </div>
 </div>
+
+<script>
+async function checkDevice(deviceKey) {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Restarting agent...';
+
+    try {
+        const response = await fetch(`/api/devices/${deviceKey}/doctor`, { method: 'POST' });
+        const data = await response.json();
+
+        if (data.success) {
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Waiting for reconnect...';
+            // Wait for agent to restart and reconnect
+            setTimeout(() => window.location.reload(), 4000);
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = "Check my permissions";
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = "Check my permissions";
+    }
+}
+
+async function openSettings(deviceKey, permission) {
+    const btn = event.target;
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const response = await fetch(`/api/devices/${deviceKey}/open-settings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permission })
+        });
+        const data = await response.json();
+
+        if (!data.success) {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+
+    btn.disabled = false;
+    btn.textContent = originalText;
+}
+</script>
 {% endblock %}

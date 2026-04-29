@@ -43,6 +43,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/devices/{key}/doctor", post(device_doctor))
         .route("/api/devices/{key}/restart", post(device_restart))
         .route("/api/devices/{key}/status", get(device_status))
+        .route("/api/devices/{key}/open-settings", post(device_open_settings))
 }
 
 async fn index() -> Redirect {
@@ -64,6 +65,14 @@ struct DeviceView {
     alias: String,
     key: String,
     is_online: bool,
+    permissions: Vec<PermissionView>,
+    has_issues: bool,
+}
+
+struct PermissionView {
+    name: String,
+    granted: bool,
+    settings_url: Option<String>,
 }
 
 async fn dashboard(
@@ -121,12 +130,32 @@ async fn dashboard(
         .into_iter()
         .map(|d| {
             let is_online = state.registry.is_online(&d.key);
+            let status = state.registry.get_device_status(&d.id);
+
+            let permissions: Vec<PermissionView> = status
+                .diagnostics
+                .map(|diag| {
+                    diag.permissions
+                        .into_iter()
+                        .map(|p| PermissionView {
+                            name: p.name,
+                            granted: p.status == common::commands::PermissionStatus::Granted,
+                            settings_url: p.settings_url,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let has_issues = permissions.iter().any(|p| !p.granted);
+
             DeviceView {
                 id: d.id,
                 name: d.name,
                 alias: d.alias,
                 key: d.key,
                 is_online,
+                permissions,
+                has_issues,
             }
         })
         .collect();
@@ -412,17 +441,9 @@ async fn device_install_script(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let base_url = extract_base_url(&headers);
+    let is_dev = base_url.contains("localhost") || base_url.contains("127.0.0.1");
 
-    let github_repo = match &state.config.github.repo {
-        Some(repo) => repo.clone(),
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Install script not available: github.repo not configured",
-            )
-                .into_response();
-        }
-    };
+    let github_repo = state.config.github.repo.clone().unwrap_or_default();
 
     let script = format!(
         r#"#!/bin/bash
@@ -434,9 +455,11 @@ set -e
 REPO="{github_repo}"
 SERVER_URL="{base_url}"
 DEVICE_KEY="{device_key}"
+DEV_MODE="{is_dev}"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
+INSTALL_DIR="/usr/local/bin"
 
 case "$ARCH" in
     x86_64|amd64) ARCH="amd64" ;;
@@ -455,43 +478,98 @@ case "$OS" in
         ;;
 esac
 
-ASSET_NAME="portal-agent-${{OS}}-${{ARCH}}"
-INSTALL_DIR="/usr/local/bin"
+if [ "$DEV_MODE" = "true" ]; then
+    echo "==> Dev mode: using local binary"
 
-echo "==> Fetching latest release from $REPO..."
+    if [ -f "./target/release/portal-agent" ]; then
+        BINARY="./target/release/portal-agent"
+    elif [ -f "./target/debug/portal-agent" ]; then
+        BINARY="./target/debug/portal-agent"
+    else
+        echo "Error: No agent binary found in target/"
+        echo "Build it first: cargo build --package agent"
+        exit 1
+    fi
 
-RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep "browser_download_url.*$ASSET_NAME\"" \
-    | cut -d '"' -f 4)
-
-if [ -z "$RELEASE_URL" ]; then
-    echo "Error: Could not find release asset for $ASSET_NAME"
-    echo "Check releases at: https://github.com/$REPO/releases"
-    exit 1
-fi
-
-echo "==> Downloading Portal agent..."
-curl -fsSL "$RELEASE_URL" -o /tmp/portal-agent
-chmod +x /tmp/portal-agent
-
-if [ -w "$INSTALL_DIR" ]; then
-    mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
+    cp "$BINARY" /tmp/portal-agent
+    chmod +x /tmp/portal-agent
 else
-    echo "==> Installing to $INSTALL_DIR (requires sudo)..."
-    sudo mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
-fi
+    ASSET_NAME="portal-agent-${{OS}}-${{ARCH}}"
 
-echo "==> Configuring agent..."
-portal-agent configure --server "$SERVER_URL" --key "$DEVICE_KEY"
+    echo "==> Fetching latest release from $REPO..."
+
+    RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+        | grep "browser_download_url.*$ASSET_NAME\"" \
+        | cut -d '"' -f 4)
+
+    if [ -z "$RELEASE_URL" ]; then
+        echo "Error: Could not find release asset for $ASSET_NAME"
+        exit 1
+    fi
+
+    echo "==> Downloading Portal agent..."
+    curl -fsSL "$RELEASE_URL" -o /tmp/portal-agent
+    chmod +x /tmp/portal-agent
+fi
 
 echo "==> Setting up daemon..."
 
 if [ "$OS" = "darwin" ]; then
-    # macOS: launchd
+    # Create .app bundle so macOS shows it properly in permission lists
+    APP_DIR="$HOME/Applications/Portal Agent.app"
+    APP_CONTENTS="$APP_DIR/Contents"
+    APP_MACOS="$APP_CONTENTS/MacOS"
+    BINARY_PATH="$APP_MACOS/portal-agent"
+
+    echo "==> Creating Portal Agent.app bundle..."
+    mkdir -p "$HOME/Applications"
+    rm -rf "$APP_DIR"
+    mkdir -p "$APP_MACOS"
+
+    # Install binary into the bundle
+    mv /tmp/portal-agent "$BINARY_PATH"
+    chmod +x "$BINARY_PATH"
+
+    # Create Info.plist
+    cat > "$APP_CONTENTS/Info.plist" << 'INFOPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.portal.agent</string>
+    <key>CFBundleName</key>
+    <string>Portal Agent</string>
+    <key>CFBundleDisplayName</key>
+    <string>Portal Agent</string>
+    <key>CFBundleExecutable</key>
+    <string>portal-agent</string>
+    <key>CFBundleVersion</key>
+    <string>1.0.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+INFOPLIST
+
+    # Create symlink in /usr/local/bin for convenience (for CLI use)
+    ln -sf "$BINARY_PATH" "$INSTALL_DIR/portal-agent" 2>/dev/null || \
+        sudo ln -sf "$BINARY_PATH" "$INSTALL_DIR/portal-agent" 2>/dev/null || true
+
+    echo "==> Configuring agent..."
+    "$BINARY_PATH" configure --server "$SERVER_URL" --key "$DEVICE_KEY"
+
+    # Create launchd plist pointing to the .app bundle
     PLIST_PATH="$HOME/Library/LaunchAgents/com.portal.agent.plist"
     mkdir -p "$HOME/Library/LaunchAgents"
 
-    cat > "$PLIST_PATH" << 'PLIST'
+    cat > "$PLIST_PATH" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -500,7 +578,7 @@ if [ "$OS" = "darwin" ]; then
     <string>com.portal.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/portal-agent</string>
+        <string>$APP_MACOS/portal-agent</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -518,14 +596,27 @@ PLIST
     launchctl load "$PLIST_PATH"
 
     echo "==> Daemon installed and started (launchd)"
+    echo "    App: $APP_DIR"
     echo "    Logs: /tmp/portal-agent.log"
     echo "    Stop: launchctl unload $PLIST_PATH"
     echo ""
     echo "Portal agent is now running!"
+    echo ""
+    echo "NOTE: When granting permissions, look for 'Portal Agent' in System Settings."
 
 elif [ "$OS" = "linux" ]; then
+    # Install to /usr/local/bin
+    if [ -w "$INSTALL_DIR" ]; then
+        mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
+    else
+        echo "==> Installing to $INSTALL_DIR (requires sudo)..."
+        sudo mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
+    fi
+
+    echo "==> Configuring agent..."
+    portal-agent configure --server "$SERVER_URL" --key "$DEVICE_KEY"
+
     if command -v systemctl &> /dev/null && systemctl --user status &> /dev/null; then
-        # Linux with systemd
         SERVICE_DIR="$HOME/.config/systemd/user"
         SERVICE_PATH="$SERVICE_DIR/portal-agent.service"
         mkdir -p "$SERVICE_DIR"
@@ -555,15 +646,9 @@ SYSTEMD
         echo ""
         echo "Portal agent is now running!"
     else
-        # Linux without systemd
         echo ""
-        echo "==> systemd not available"
-        echo ""
-        echo "To run manually:"
+        echo "==> systemd not available. Run manually:"
         echo "  portal-agent"
-        echo ""
-        echo "Or install systemd and re-run this script:"
-        echo "  apt install systemd"
     fi
 fi
 echo ""
@@ -634,11 +719,12 @@ async fn device_doctor(
         return ApiResponse::<serde_json::Value>::err("Device is offline");
     }
 
-    // Send GetDiagnostics command
+    // Restart the agent so it picks up new permissions
+    // launchd will auto-restart it, and it sends diagnostics on reconnect
     let request_id = Uuid::new_v4();
     let msg = Message::Request {
         id: request_id,
-        name: GetDiagnostics::NAME.to_string(),
+        name: "restart_agent".to_string(),
         payload: serde_json::json!({}),
     };
 
@@ -646,7 +732,7 @@ async fn device_doctor(
         return ApiResponse::err("Failed to send command");
     }
 
-    ApiResponse::ok(serde_json::json!({"message": "Diagnostics requested"}))
+    ApiResponse::ok(serde_json::json!({"message": "Agent restarting to check permissions"}))
 }
 
 async fn device_restart(
@@ -670,4 +756,32 @@ async fn device_restart(
     }
 
     ApiResponse::ok(serde_json::json!({"message": "Restart requested"}))
+}
+
+#[derive(Deserialize)]
+struct OpenSettingsRequest {
+    permission: String,
+}
+
+async fn device_open_settings(
+    State(state): State<AppState>,
+    Path(device_key): Path<String>,
+    Json(body): Json<OpenSettingsRequest>,
+) -> impl IntoResponse {
+    if !state.registry.is_online(&device_key) {
+        return ApiResponse::<serde_json::Value>::err("Device is offline");
+    }
+
+    let request_id = Uuid::new_v4();
+    let msg = Message::Request {
+        id: request_id,
+        name: "open_settings".to_string(),
+        payload: serde_json::json!({"permission": body.permission}),
+    };
+
+    if !state.registry.send_command(&device_key, msg).await {
+        return ApiResponse::err("Failed to send command");
+    }
+
+    ApiResponse::ok(serde_json::json!({"message": "Settings opened"}))
 }

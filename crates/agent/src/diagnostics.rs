@@ -127,12 +127,25 @@ fn check_accessibility() -> Permission {
 
 #[cfg(target_os = "macos")]
 fn macos_accessibility_check() -> PermissionStatus {
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
-        fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: *const core_foundation::dictionary::__CFDictionary) -> bool;
+        static kAXTrustedCheckOptionPrompt: *const core_foundation::string::__CFString;
     }
 
-    if unsafe { AXIsProcessTrusted() } {
+    // Create options dict with prompt = true to show the system dialog
+    let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let value = CFBoolean::true_value();
+    let options = CFDictionary::from_CFType_pairs(&[(key, value)]);
+
+    let trusted = unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) };
+
+    if trusted {
         PermissionStatus::Granted
     } else {
         PermissionStatus::Denied

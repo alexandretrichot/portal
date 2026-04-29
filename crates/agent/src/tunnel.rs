@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
-use common::commands::{AgentReady, LogEvent, LogLevel, UpdateMcpConfig};
+use common::commands::{AgentReady, DiagnosticsResponse, Permission, PermissionStatus, UpdateMcpConfig};
 use common::{AuthMessage, Dispatcher, Message, PendingRequests, PongMessage, Sender, TunnelMessage};
 
 use crate::config::ServerConfig;
@@ -63,10 +63,14 @@ impl TunnelConnection {
     }
 
     async fn connect_and_run(&self) -> Result<()> {
-        let url = format!(
-            "{}/device?key={}",
-            self.server_config.url, self.server_config.key
-        );
+        // Convert http(s) to ws(s)
+        let ws_url = self
+            .server_config
+            .url
+            .replace("https://", "wss://")
+            .replace("http://", "ws://");
+
+        let url = format!("{}/device?key={}", ws_url, self.server_config.key);
         tracing::info!(server = %self.server_config.url, "Connecting to Portal server");
 
         let (ws_stream, _) = connect_async(&url).await?;
@@ -192,6 +196,33 @@ impl TunnelConnection {
                 let _ = dispatcher
                     .dispatch_agent_command("update_mcp_config", payload)
                     .await;
+
+                // Send diagnostics
+                let diag = crate::diagnostics::Diagnostics::check();
+                let diag_response = DiagnosticsResponse {
+                    os: diag.os,
+                    permissions: diag
+                        .permissions
+                        .into_iter()
+                        .map(|p| Permission {
+                            name: p.name,
+                            status: match p.status {
+                                crate::diagnostics::PermissionStatus::Granted => PermissionStatus::Granted,
+                                crate::diagnostics::PermissionStatus::Denied => PermissionStatus::Denied,
+                                _ => PermissionStatus::Unknown,
+                            },
+                            settings_url: p.settings_url,
+                        })
+                        .collect(),
+                };
+
+                // Send as response to a fake request (server will handle it)
+                let diag_msg = Message::Event {
+                    name: "diagnostics".to_string(),
+                    payload: serde_json::to_value(&diag_response)?,
+                };
+                let text = serde_json::to_string(&diag_msg)?;
+                write.send(WsMessage::Text(text.into())).await?;
 
                 // Send AgentReady event
                 let ready = AgentReady {
