@@ -1,0 +1,21 @@
+[package]
+name = "mcp-imessage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcp-imessage"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+rusqlite = { version = "0.34", features = ["bundled"] }
+chrono.workspace = true
+dirs = "6"

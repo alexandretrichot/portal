@@ -4,6 +4,7 @@ members = [
     "crates/tunnel-client",
     "crates/tunnel-server",
     "crates/tunnel-cli",
+    "crates/mcp-imessage",
 ]
 resolver = "2"
 
