@@ -1,0 +1,39 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/alexandretrichot/portal
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  clusterIssuer: ""
+  host: ""
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+
+config:
+  database:
+    url: "/data/portal.db"
+  clerk:
+    enabled: false
+    domain: ""
+  github:
+    repo: alexandretrichot/portal
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi

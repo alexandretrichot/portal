@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+data:
+  server.json: |
+    {
+      "database": {{ .Values.config.database | toJson }},
+      "clerk": {{ .Values.config.clerk | toJson }},
+      "github": {{ .Values.config.github | toJson }}
+    }
