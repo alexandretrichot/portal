@@ -1,4 +1,4 @@
-FROM rust:1.82-alpine AS chef
+FROM rust:1.94-alpine AS chef
 RUN apk add --no-cache musl-dev
 RUN cargo install cargo-chef
 WORKDIR /app
