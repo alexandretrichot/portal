@@ -50,7 +50,7 @@
                         <th>Name</th>
                         <th>Alias</th>
                         <th>Status</th>
-                        <th>Connection Key</th>
+                        <th>Install Command</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -68,9 +68,9 @@
                         </td>
                         <td>
                             <div class="d-flex align-items-center gap-2">
-                                <code class="key-display small">{{ device.key }}</code>
+                                <code class="key-display small text-truncate" style="max-width: 300px;">curl -fsSL {{ base_url }}/install/{{ device.key }} | bash</code>
                                 <button class="btn btn-outline-secondary btn-sm copy-btn"
-                                        onclick="copyToClipboard('{{ device.key }}', this)">
+                                        onclick="copyToClipboard('curl -fsSL {{ base_url }}/install/{{ device.key }} | bash', this)">
                                     Copy
                                 </button>
                             </div>
@@ -95,16 +95,6 @@
             </table>
         </div>
         {% endif %}
-
-        <div class="card mt-4">
-            <div class="card-body">
-                <h5 class="card-title">Quick Setup</h5>
-                <p class="card-text">Install the Portal agent on your device:</p>
-                <pre class="bg-light p-3 rounded"><code>curl -fsSL {{ base_url }}/install.sh | bash</code></pre>
-                <p class="card-text">Then connect the device:</p>
-                <pre class="bg-light p-3 rounded"><code>portal-agent --key YOUR_DEVICE_KEY --server {{ base_url }}</code></pre>
-            </div>
-        </div>
     </div>
 </div>
 

@@ -35,6 +35,7 @@ pub fn router() -> Router<AppState> {
         .route("/devices/{id}/regenerate", post(regenerate_device))
         .route("/gateway/regenerate", post(regenerate_gateway))
         .route("/install.sh", get(install_script))
+        .route("/install/{device_key}", get(device_install_script))
 }
 
 async fn index() -> Redirect {
@@ -387,6 +388,168 @@ echo "Portal agent installed successfully!"
 echo ""
 echo "Usage:"
 echo "  portal-agent --key YOUR_DEVICE_KEY --server {base_url}"
+echo ""
+"#
+    );
+
+    (
+        [("Content-Type", "text/plain; charset=utf-8")],
+        script,
+    )
+        .into_response()
+}
+
+async fn device_install_script(
+    State(state): State<AppState>,
+    Path(device_key): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let base_url = extract_base_url(&headers);
+
+    let github_repo = match &state.config.github.repo {
+        Some(repo) => repo.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Install script not available: github.repo not configured",
+            )
+                .into_response();
+        }
+    };
+
+    let script = format!(
+        r#"#!/bin/bash
+set -e
+
+# Portal Agent Installer & Setup
+# Server: {base_url}
+
+REPO="{github_repo}"
+SERVER_URL="{base_url}"
+DEVICE_KEY="{device_key}"
+
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+
+case "$ARCH" in
+    x86_64|amd64) ARCH="amd64" ;;
+    aarch64|arm64) ARCH="arm64" ;;
+    *)
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+        ;;
+esac
+
+case "$OS" in
+    linux|darwin) ;;
+    *)
+        echo "Unsupported OS: $OS"
+        exit 1
+        ;;
+esac
+
+ASSET_NAME="portal-agent-${{OS}}-${{ARCH}}"
+INSTALL_DIR="/usr/local/bin"
+
+echo "==> Fetching latest release from $REPO..."
+
+RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    | grep "browser_download_url.*$ASSET_NAME\"" \
+    | cut -d '"' -f 4)
+
+if [ -z "$RELEASE_URL" ]; then
+    echo "Error: Could not find release asset for $ASSET_NAME"
+    echo "Check releases at: https://github.com/$REPO/releases"
+    exit 1
+fi
+
+echo "==> Downloading Portal agent..."
+curl -fsSL "$RELEASE_URL" -o /tmp/portal-agent
+chmod +x /tmp/portal-agent
+
+if [ -w "$INSTALL_DIR" ]; then
+    mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
+else
+    echo "==> Installing to $INSTALL_DIR (requires sudo)..."
+    sudo mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
+fi
+
+echo "==> Setting up daemon..."
+
+if [ "$OS" = "darwin" ]; then
+    # macOS: launchd
+    PLIST_PATH="$HOME/Library/LaunchAgents/com.portal.agent.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+
+    cat > "$PLIST_PATH" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.portal.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/portal-agent</string>
+        <string>--server</string>
+        <string>SERVER_URL_PLACEHOLDER</string>
+        <string>--key</string>
+        <string>DEVICE_KEY_PLACEHOLDER</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/portal-agent.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/portal-agent.log</string>
+</dict>
+</plist>
+PLIST
+
+    sed -i '' "s|SERVER_URL_PLACEHOLDER|$SERVER_URL|g" "$PLIST_PATH"
+    sed -i '' "s|DEVICE_KEY_PLACEHOLDER|$DEVICE_KEY|g" "$PLIST_PATH"
+
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    launchctl load "$PLIST_PATH"
+
+    echo "==> Daemon installed and started (launchd)"
+    echo "    Logs: /tmp/portal-agent.log"
+    echo "    Stop: launchctl unload $PLIST_PATH"
+
+elif [ "$OS" = "linux" ]; then
+    # Linux: systemd user service
+    SERVICE_DIR="$HOME/.config/systemd/user"
+    SERVICE_PATH="$SERVICE_DIR/portal-agent.service"
+    mkdir -p "$SERVICE_DIR"
+
+    cat > "$SERVICE_PATH" << SYSTEMD
+[Unit]
+Description=Portal Agent
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/portal-agent --server $SERVER_URL --key $DEVICE_KEY
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+SYSTEMD
+
+    systemctl --user daemon-reload
+    systemctl --user enable portal-agent
+    systemctl --user restart portal-agent
+
+    echo "==> Daemon installed and started (systemd)"
+    echo "    Status: systemctl --user status portal-agent"
+    echo "    Logs: journalctl --user -u portal-agent -f"
+    echo "    Stop: systemctl --user stop portal-agent"
+fi
+
+echo ""
+echo "Portal agent is now running!"
 echo ""
 "#
     );
