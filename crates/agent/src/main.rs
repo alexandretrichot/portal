@@ -1,4 +1,5 @@
 mod config;
+pub mod diagnostics;
 mod mcp_proxy;
 mod tunnel;
 
@@ -49,6 +50,12 @@ enum Command {
         #[arg(long, required = true)]
         key: String,
     },
+    /// Check system permissions and requirements
+    Doctor {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the agent (default if no subcommand)
     Run,
 }
@@ -62,12 +69,61 @@ async fn main() -> Result<()> {
         Some(Command::Configure { server, key }) => {
             configure(&config_path, &server, &key)?;
         }
+        Some(Command::Doctor { json }) => {
+            doctor(json);
+        }
         Some(Command::Run) | None => {
             run_agent(args, &config_path).await?;
         }
     }
 
     Ok(())
+}
+
+fn doctor(json: bool) {
+    use diagnostics::{Diagnostics, PermissionStatus};
+
+    let diag = Diagnostics::check();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&diag).unwrap());
+        return;
+    }
+
+    println!("Portal Agent Diagnostics");
+    println!("========================");
+    println!("OS: {}", diag.os);
+    println!();
+
+    if diag.permissions.is_empty() {
+        println!("No special permissions required on this platform.");
+        return;
+    }
+
+    println!("Permissions:");
+    for perm in &diag.permissions {
+        let (icon, status_text) = match perm.status {
+            PermissionStatus::Granted => ("✓", "Granted"),
+            PermissionStatus::Denied => ("✗", "Denied"),
+            PermissionStatus::Unknown => ("?", "Unknown"),
+            PermissionStatus::NotApplicable => ("-", "N/A"),
+        };
+
+        println!("  {} {}: {}", icon, perm.name, status_text);
+
+        if perm.status == PermissionStatus::Denied {
+            if let Some(url) = &perm.settings_url {
+                println!("    Fix: open \"{}\"", url);
+            }
+        }
+    }
+
+    println!();
+    if diag.all_granted() {
+        println!("All permissions granted!");
+    } else {
+        println!("Some permissions are missing. Run the commands above to fix.");
+    }
 }
 
 fn configure(config_path: &std::path::Path, server: &str, key: &str) -> Result<()> {
