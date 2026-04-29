@@ -56,6 +56,12 @@ enum Command {
     },
     /// Run the agent (default if no subcommand)
     Run,
+    /// Uninstall the agent completely
+    Uninstall {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -69,6 +75,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Doctor { json }) => {
             doctor(json);
+        }
+        Some(Command::Uninstall { yes }) => {
+            uninstall(yes, &config_path)?;
         }
         Some(Command::Run) | None => {
             run_agent(args, &config_path).await?;
@@ -122,6 +131,99 @@ fn doctor(json: bool) {
     } else {
         println!("Some permissions are missing. Run the commands above to fix.");
     }
+}
+
+fn uninstall(skip_confirm: bool, config_path: &std::path::Path) -> Result<()> {
+    use std::io::{self, Write};
+    use std::process::Command as ProcessCommand;
+
+    if !skip_confirm {
+        print!("This will completely remove Portal Agent. Continue? [y/N] ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    println!("Uninstalling Portal Agent...");
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir().expect("No home directory");
+        let plist_path = home.join("Library/LaunchAgents/com.portal.agent.plist");
+        let app_path = home.join("Applications/Portal Agent.app");
+
+        // Stop and unload launchd service
+        println!("  Stopping daemon...");
+        let _ = ProcessCommand::new("launchctl")
+            .args(["unload", plist_path.to_str().unwrap()])
+            .output();
+
+        // Remove launchd plist
+        if plist_path.exists() {
+            std::fs::remove_file(&plist_path)?;
+            println!("  Removed {}", plist_path.display());
+        }
+
+        // Remove app bundle
+        if app_path.exists() {
+            std::fs::remove_dir_all(&app_path)?;
+            println!("  Removed {}", app_path.display());
+        }
+
+        // Remove symlink from /usr/local/bin
+        let symlink_path = std::path::Path::new("/usr/local/bin/portal-agent");
+        if symlink_path.exists() || symlink_path.is_symlink() {
+            let _ = std::fs::remove_file(symlink_path);
+            println!("  Removed {}", symlink_path.display());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let home = dirs::home_dir().expect("No home directory");
+        let service_path = home.join(".config/systemd/user/portal-agent.service");
+
+        // Stop and disable systemd service
+        println!("  Stopping daemon...");
+        let _ = ProcessCommand::new("systemctl")
+            .args(["--user", "stop", "portal-agent"])
+            .output();
+        let _ = ProcessCommand::new("systemctl")
+            .args(["--user", "disable", "portal-agent"])
+            .output();
+
+        // Remove service file
+        if service_path.exists() {
+            std::fs::remove_file(&service_path)?;
+            println!("  Removed {}", service_path.display());
+            let _ = ProcessCommand::new("systemctl")
+                .args(["--user", "daemon-reload"])
+                .output();
+        }
+
+        // Note: we don't remove /usr/local/bin/portal-agent as it might need sudo
+        let bin_path = std::path::Path::new("/usr/local/bin/portal-agent");
+        if bin_path.exists() {
+            println!("  Note: Run 'sudo rm {}' to remove the binary", bin_path.display());
+        }
+    }
+
+    // Remove config directory
+    if let Some(config_dir) = config_path.parent() {
+        if config_dir.exists() {
+            std::fs::remove_dir_all(config_dir)?;
+            println!("  Removed {}", config_dir.display());
+        }
+    }
+
+    println!();
+    println!("Portal Agent uninstalled successfully.");
+
+    Ok(())
 }
 
 fn configure(config_path: &std::path::Path, server: &str, key: &str) -> Result<()> {
