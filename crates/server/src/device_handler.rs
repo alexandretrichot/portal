@@ -260,7 +260,10 @@ async fn handle_client_message(msg: TunnelMessage, state: &AppState, device_id: 
                 mcp_servers = ?status.mcp_servers.keys().collect::<Vec<_>>(),
                 "Device status update"
             );
-            // TODO: Store status in registry or cache for dashboard
+            state.registry.update_mcp_status(device_id, status.mcp_servers);
+            if let Some(diag) = status.diagnostics {
+                state.registry.update_diagnostics(device_id, diag);
+            }
         }
         TunnelMessage::Log(log) => {
             match log.level {
@@ -292,6 +295,16 @@ async fn handle_transport_message(msg: common::Message, state: &AppState, device
                 }
                 "agent_ready" => {
                     tracing::info!(device_id = %device_id, "Agent ready");
+                }
+                "mcp_status" => {
+                    if let Ok(status) = serde_json::from_value::<common::commands::McpStatusResponse>(payload) {
+                        tracing::info!(
+                            device_id = %device_id,
+                            servers = ?status.servers.keys().collect::<Vec<_>>(),
+                            "MCP status update"
+                        );
+                        state.registry.update_mcp_status(device_id, status.servers);
+                    }
                 }
                 _ => {
                     tracing::debug!(device_id = %device_id, event = %name, "Unknown event");

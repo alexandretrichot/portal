@@ -72,5 +72,8 @@ jsonwebtoken = "9"
 askama = "0.12"
 askama_axum = "0.4"
 
+# JSON Schema
+schemars = "0.8"
+
 # Internal crates
 common = { path = "crates/common" }

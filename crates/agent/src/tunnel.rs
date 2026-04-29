@@ -226,9 +226,27 @@ impl TunnelConnection {
                 let text = serde_json::to_string(&diag_msg)?;
                 write.send(WsMessage::Text(text.into())).await?;
 
+                // Send MCP status
+                let mcp_status = {
+                    let manager = mcp_manager.read().await;
+                    if let Some(mgr) = manager.as_ref() {
+                        mgr.get_status().await
+                    } else {
+                        std::collections::HashMap::new()
+                    }
+                };
+                let status_event = Message::Event {
+                    name: "mcp_status".to_string(),
+                    payload: serde_json::to_value(&common::commands::McpStatusResponse {
+                        servers: mcp_status.clone(),
+                    })?,
+                };
+                let text = serde_json::to_string(&status_event)?;
+                write.send(WsMessage::Text(text.into())).await?;
+
                 // Send AgentReady event
                 let ready = AgentReady {
-                    mcp_servers: vec![],
+                    mcp_servers: mcp_status.keys().cloned().collect(),
                 };
                 let event = Message::Event {
                     name: "agent_ready".to_string(),

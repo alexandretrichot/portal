@@ -74,6 +74,10 @@ pub struct McpServerStatus {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub tools_count: usize,
+    #[serde(default)]
+    pub logs: Vec<String>,
 }
 
 impl Command for GetMcpStatus {

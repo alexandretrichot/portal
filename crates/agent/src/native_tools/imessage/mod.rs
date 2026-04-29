@@ -1,7 +1,6 @@
 mod db;
 mod tools;
 
-pub use db::{Conversation, Message};
 pub use tools::{get_tools, handle_tool_call};
 
 pub fn default_db_path() -> String {

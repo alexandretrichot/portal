@@ -13,11 +13,17 @@ use common::commands::McpServerStatus;
 use crate::native_tools::NativeTools;
 use crate::config::McpServerConfig;
 
+struct McpServer {
+    peer: Arc<Peer<RoleClient>>,
+    pid: u32,
+    tools_count: usize,
+}
+
 pub struct McpProxyManager {
     configs: HashMap<String, McpServerConfig>,
-    clients: Mutex<HashMap<String, Arc<Peer<RoleClient>>>>,
+    servers: Arc<Mutex<HashMap<String, McpServer>>>,
     tool_to_server: Mutex<HashMap<String, String>>,
-    errors: Mutex<HashMap<String, String>>,
+    errors: Arc<Mutex<HashMap<String, String>>>,
     native_tools: NativeTools,
 }
 
@@ -25,43 +31,54 @@ impl McpProxyManager {
     pub fn new(configs: HashMap<String, McpServerConfig>) -> Self {
         Self {
             configs,
-            clients: Mutex::new(HashMap::new()),
+            servers: Arc::new(Mutex::new(HashMap::new())),
             tool_to_server: Mutex::new(HashMap::new()),
-            errors: Mutex::new(HashMap::new()),
+            errors: Arc::new(Mutex::new(HashMap::new())),
             native_tools: NativeTools::new(),
         }
     }
 
     pub async fn get_status(&self) -> HashMap<String, McpServerStatus> {
-        let clients = self.clients.lock().await;
+        let servers = self.servers.lock().await;
         let errors = self.errors.lock().await;
 
-        self.configs
-            .keys()
-            .map(|name| {
-                let running = clients.contains_key(name);
-                let error = errors.get(name).cloned();
+        let mut result = HashMap::new();
 
-                (
-                    name.clone(),
-                    McpServerStatus {
-                        running,
-                        error,
-                        pid: None,
-                    },
-                )
-            })
-            .collect()
+        for name in self.configs.keys() {
+            let status = if let Some(server) = servers.get(name) {
+                McpServerStatus {
+                    running: true,
+                    error: None,
+                    pid: Some(server.pid),
+                    tools_count: server.tools_count,
+                    logs: vec![],
+                }
+            } else {
+                McpServerStatus {
+                    running: false,
+                    error: errors.get(name).cloned(),
+                    pid: None,
+                    tools_count: 0,
+                    logs: vec![],
+                }
+            };
+            result.insert(name.clone(), status);
+        }
+
+        result
     }
 
     pub async fn restart_server(&self, name: &str) {
-        let mut clients = self.clients.lock().await;
-        clients.remove(name);
+        let mut servers = self.servers.lock().await;
+        servers.remove(name);
 
         let mut errors = self.errors.lock().await;
         errors.remove(name);
 
-        tracing::info!(server = %name, "MCP server will restart on next request");
+        let mut tool_map = self.tool_to_server.lock().await;
+        tool_map.retain(|_, v| v != name);
+
+        tracing::info!(server = %name, "MCP server stopped, will restart on next request");
     }
 
     pub async fn forward_request(&self, req: McpRequestMessage) -> McpResponseMessage {
@@ -81,12 +98,12 @@ impl McpProxyManager {
         let mut all_tools = Vec::new();
         let mut tool_map = self.tool_to_server.lock().await;
 
-        // Add builtin tools first
-        let builtin_tools = self.native_tools.get_tools();
-        for tool in &builtin_tools {
+        // Add native tools first
+        let native_tools = self.native_tools.get_tools();
+        for tool in &native_tools {
             tool_map.insert(tool.name.to_string(), "__native__".to_string());
         }
-        all_tools.extend(builtin_tools);
+        all_tools.extend(native_tools);
 
         // Add tools from external MCP servers
         for (name, config) in &self.configs {
@@ -94,23 +111,30 @@ impl McpProxyManager {
                 continue;
             }
 
-            let peer = match self.get_or_create_client(name, config).await {
-                Ok(c) => c,
+            let peer = match self.get_or_create_server(name, config).await {
+                Ok(p) => p,
                 Err(e) => {
-                    tracing::warn!("Failed to connect to MCP server '{}': {}", name, e);
+                    tracing::warn!(server = %name, error = %e, "Failed to connect to MCP server");
                     continue;
                 }
             };
 
             match peer.list_tools(Default::default()).await {
                 Ok(result) => {
+                    let tools_count = result.tools.len();
                     for tool in &result.tools {
                         tool_map.insert(tool.name.to_string(), name.clone());
                     }
                     all_tools.extend(result.tools);
+
+                    // Update tools count
+                    let mut servers = self.servers.lock().await;
+                    if let Some(server) = servers.get_mut(name) {
+                        server.tools_count = tools_count;
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to list tools from '{}': {}", name, e);
+                    tracing::warn!(server = %name, error = %e, "Failed to list tools");
                 }
             }
         }
@@ -150,7 +174,7 @@ impl McpProxyManager {
             );
         };
 
-        // Handle builtin tools
+        // Handle native tools
         if server_name == "__native__" {
             let tool_params: CallToolRequestParams = match params {
                 Some(p) => match serde_json::from_value(p.clone()) {
@@ -182,7 +206,7 @@ impl McpProxyManager {
                 Err(e) => {
                     return McpResponseMessage::error(
                         req.correlation_id,
-                        TunnelError::new(-32603, format!("Builtin tool failed: {:?}", e)),
+                        TunnelError::new(-32603, format!("Native tool failed: {:?}", e)),
                     );
                 }
             }
@@ -199,8 +223,8 @@ impl McpProxyManager {
             }
         };
 
-        let peer = match self.get_or_create_client(&server_name, config).await {
-            Ok(c) => c,
+        let peer = match self.get_or_create_server(&server_name, config).await {
+            Ok(p) => p,
             Err(e) => {
                 return McpResponseMessage::error(
                     req.correlation_id,
@@ -252,8 +276,8 @@ impl McpProxyManager {
                 continue;
             }
 
-            let peer = match self.get_or_create_client(name, config).await {
-                Ok(c) => c,
+            let peer = match self.get_or_create_server(name, config).await {
+                Ok(p) => p,
                 Err(_) => continue,
             };
 
@@ -279,8 +303,8 @@ impl McpProxyManager {
                 continue;
             }
 
-            let peer = match self.get_or_create_client(name, config).await {
-                Ok(c) => c,
+            let peer = match self.get_or_create_server(name, config).await {
+                Ok(p) => p,
                 Err(_) => continue,
             };
 
@@ -319,15 +343,16 @@ impl McpProxyManager {
         }
     }
 
-    async fn get_or_create_client(
+    async fn get_or_create_server(
         &self,
         name: &str,
         config: &McpServerConfig,
     ) -> Result<Arc<Peer<RoleClient>>, String> {
-        let mut clients = self.clients.lock().await;
-
-        if let Some(client) = clients.get(name) {
-            return Ok(client.clone());
+        {
+            let servers = self.servers.lock().await;
+            if let Some(server) = servers.get(name) {
+                return Ok(server.peer.clone());
+            }
         }
 
         let command = config.command.as_ref().ok_or("No command specified")?;
@@ -338,19 +363,48 @@ impl McpProxyManager {
             cmd.env(key, value);
         }
 
+        tracing::info!(server = %name, command = %command, args = ?config.args, "Starting MCP server");
+
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| format!("Failed to spawn process: {}", e))?;
 
         let running = ().serve(transport).await
-            .map_err(|e| format!("Failed to initialize MCP client: {}", e))?;
+            .map_err(|e| {
+                let err = format!("Failed to initialize MCP client: {}", e);
+                tracing::error!(server = %name, "{}", err);
+                err
+            })?;
 
         let peer = Arc::new(running.peer().clone());
-        clients.insert(name.to_string(), peer.clone());
+        let pid = std::process::id(); // We don't have direct access to child PID with rmcp
 
-        // Keep the running service alive in a background task
+        {
+            let mut servers = self.servers.lock().await;
+            servers.insert(name.to_string(), McpServer {
+                peer: peer.clone(),
+                pid,
+                tools_count: 0,
+            });
+        }
+
+        // Keep the running service alive and handle cleanup
+        let name_clone = name.to_string();
+        let servers_ref = self.servers.clone();
+        let errors_ref = self.errors.clone();
         tokio::spawn(async move {
-            let _ = running.waiting().await;
+            let result = running.waiting().await;
+            tracing::info!(server = %name_clone, "MCP server process exited");
+
+            // Remove from servers map
+            servers_ref.lock().await.remove(&name_clone);
+
+            // Record error if any
+            if let Err(e) = result {
+                errors_ref.lock().await.insert(name_clone, e.to_string());
+            }
         });
+
+        tracing::info!(server = %name, "MCP server started successfully");
 
         Ok(peer)
     }

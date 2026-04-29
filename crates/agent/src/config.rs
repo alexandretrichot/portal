@@ -12,9 +12,6 @@ pub struct AgentConfig {
 
     #[serde(default)]
     pub server: Option<ServerConfig>,
-
-    #[serde(default)]
-    pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
 impl Default for AgentConfig {
@@ -22,7 +19,6 @@ impl Default for AgentConfig {
         Self {
             device_name: None,
             server: None,
-            mcp_servers: HashMap::new(),
         }
     }
 }

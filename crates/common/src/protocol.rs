@@ -61,38 +61,8 @@ pub enum AgentCommand {
 /// Agent sends status updates
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusMessage {
-    pub diagnostics: Option<DiagnosticsInfo>,
-    pub mcp_servers: HashMap<String, McpServerStatus>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiagnosticsInfo {
-    pub os: String,
-    pub permissions: Vec<PermissionInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionInfo {
-    pub name: String,
-    pub status: PermissionStatus,
-    pub settings_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionStatus {
-    Granted,
-    Denied,
-    Unknown,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerStatus {
-    pub running: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
+    pub diagnostics: Option<crate::commands::DiagnosticsResponse>,
+    pub mcp_servers: HashMap<String, crate::commands::McpServerStatus>,
 }
 
 /// Agent streams logs to server

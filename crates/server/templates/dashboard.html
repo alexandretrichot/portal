@@ -127,6 +127,32 @@
                             <div class="alert alert-success mb-3">
                                 <strong>All permissions granted</strong>
                             </div>
+
+                            {% if !device.mcp_servers.is_empty() %}
+                            <div class="mb-3">
+                                <h6 class="text-muted mb-2">MCP Servers</h6>
+                                <div class="list-group list-group-flush">
+                                    {% for server in device.mcp_servers %}
+                                    <div class="list-group-item d-flex justify-content-between align-items-center px-0">
+                                        <div>
+                                            <strong>{{ server.name }}</strong>
+                                            {% if server.running %}
+                                            <span class="badge bg-success ms-2">Running</span>
+                                            {% if server.tools_count > 0 %}
+                                            <span class="badge bg-secondary ms-1">{{ server.tools_count }} tools</span>
+                                            {% endif %}
+                                            {% else %}
+                                            <span class="badge bg-danger ms-2">Stopped</span>
+                                            {% endif %}
+                                        </div>
+                                        {% if server.error.is_some() %}
+                                        <small class="text-danger">{{ server.error.as_ref().unwrap() }}</small>
+                                        {% endif %}
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endif %}
                             {% else %}
                             <div class="alert alert-info mb-3">
                                 <span class="spinner-border spinner-border-sm me-2"></span>
@@ -145,6 +171,38 @@
                                         onclick="copyToClipboard('curl -fsSL {{ base_url }}/install/{{ device.key }} | bash', this)">
                                     Copy
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- MCP Config Section -->
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="text-muted mb-0">MCP Servers Configuration</h6>
+                                <div>
+                                    <button class="btn btn-outline-primary btn-sm" type="button"
+                                            onclick="toggleEditor('{{ device.id }}')">
+                                        Edit
+                                    </button>
+                                    <button class="btn btn-primary btn-sm d-none" id="saveBtn{{ device.id }}"
+                                            onclick="saveConfig('{{ device.id }}')">
+                                        Save
+                                    </button>
+                                </div>
+                            </div>
+
+                            {% if !device.mcp_config.is_empty() %}
+                            <div class="mb-2" id="mcpSummary{{ device.id }}">
+                                {% for cfg in device.mcp_config %}
+                                <span class="badge bg-secondary me-1">{{ cfg.name }}</span>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <div class="text-muted small mb-2" id="mcpSummary{{ device.id }}">No MCP servers configured</div>
+                            {% endif %}
+
+                            <div class="d-none" id="mcpEditor{{ device.id }}">
+                                <div id="monaco{{ device.id }}" style="height: 300px; border: 1px solid #ddd; border-radius: 4px;"></div>
+                                <small class="text-muted mt-1 d-block">JSON with autocompletion. Add servers with command, args, and env.</small>
                             </div>
                         </div>
 
@@ -201,7 +259,110 @@
     </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <script>
+// Monaco Editor setup
+let editors = {};
+let mcpSchema = null;
+
+require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' } });
+
+// Fetch JSON schema on load
+fetch('/api/schema/mcp-config')
+    .then(r => r.json())
+    .then(schema => {
+        mcpSchema = schema;
+    });
+
+function toggleEditor(deviceId) {
+    const editorDiv = document.getElementById(`mcpEditor${deviceId}`);
+    const summary = document.getElementById(`mcpSummary${deviceId}`);
+    const saveBtn = document.getElementById(`saveBtn${deviceId}`);
+
+    if (editorDiv.classList.contains('d-none')) {
+        editorDiv.classList.remove('d-none');
+        summary.classList.add('d-none');
+        saveBtn.classList.remove('d-none');
+
+        if (!editors[deviceId]) {
+            // Fetch current config and create editor
+            fetch(`/api/devices/${deviceId}/mcp-config`)
+                .then(r => r.json())
+                .then(result => {
+                    const config = result.data || { servers: {} };
+                    createEditor(deviceId, config);
+                });
+        }
+    } else {
+        editorDiv.classList.add('d-none');
+        summary.classList.remove('d-none');
+        saveBtn.classList.add('d-none');
+    }
+}
+
+function createEditor(deviceId, config) {
+    require(['vs/editor/editor.main'], function () {
+        // Configure JSON schema
+        monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+            validate: true,
+            schemas: [{
+                uri: 'http://portal/mcp-config-schema.json',
+                fileMatch: ['*'],
+                schema: mcpSchema
+            }]
+        });
+
+        const container = document.getElementById(`monaco${deviceId}`);
+        editors[deviceId] = monaco.editor.create(container, {
+            value: JSON.stringify(config, null, 2),
+            language: 'json',
+            theme: 'vs',
+            minimap: { enabled: false },
+            automaticLayout: true,
+            tabSize: 2,
+            scrollBeyondLastLine: false,
+            lineNumbers: 'off',
+            folding: true,
+            fontSize: 13
+        });
+    });
+}
+
+async function saveConfig(deviceId) {
+    const editor = editors[deviceId];
+    if (!editor) return;
+
+    const btn = document.getElementById(`saveBtn${deviceId}`);
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+
+    try {
+        const config = JSON.parse(editor.getValue());
+        const response = await fetch(`/api/devices/${deviceId}/mcp-config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            btn.textContent = 'Saved!';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-success');
+            setTimeout(() => window.location.reload(), 1000);
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    } catch (e) {
+        alert('Invalid JSON: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
 async function checkDevice(deviceKey) {
     const btn = event.target;
     btn.disabled = true;
@@ -213,17 +374,16 @@ async function checkDevice(deviceKey) {
 
         if (data.success) {
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Waiting for reconnect...';
-            // Wait for agent to restart and reconnect
             setTimeout(() => window.location.reload(), 4000);
         } else {
             alert('Error: ' + (data.error || 'Unknown error'));
             btn.disabled = false;
-            btn.textContent = "Check my permissions";
+            btn.textContent = "Restart and verify";
         }
     } catch (e) {
         alert('Error: ' + e.message);
         btn.disabled = false;
-        btn.textContent = "Check my permissions";
+        btn.textContent = "Restart and verify";
     }
 }
 

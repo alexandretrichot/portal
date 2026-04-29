@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -6,7 +6,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use tokio::sync::mpsc;
-use common::commands::DiagnosticsResponse;
+use common::commands::{DiagnosticsResponse, McpServerStatus};
 use common::{Message, TunnelMessage};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -60,6 +60,7 @@ pub struct DeviceStatus {
     pub online: bool,
     pub diagnostics: Option<DiagnosticsResponse>,
     pub last_diagnostics_at: Option<DateTime<Utc>>,
+    pub mcp_servers: HashMap<String, McpServerStatus>,
 }
 
 pub struct ConnectionRegistry {
@@ -90,6 +91,21 @@ impl ConnectionRegistry {
                 online: self.is_device_online(device_id),
                 diagnostics: Some(diagnostics),
                 last_diagnostics_at: Some(Utc::now()),
+                mcp_servers: HashMap::new(),
+            });
+    }
+
+    pub fn update_mcp_status(&self, device_id: &str, servers: HashMap<String, McpServerStatus>) {
+        self.device_status
+            .entry(device_id.to_string())
+            .and_modify(|status| {
+                status.mcp_servers = servers.clone();
+            })
+            .or_insert(DeviceStatus {
+                online: self.is_device_online(device_id),
+                diagnostics: None,
+                last_diagnostics_at: None,
+                mcp_servers: servers,
             });
     }
 
@@ -101,6 +117,7 @@ impl ConnectionRegistry {
                 online: self.is_device_online(device_id),
                 diagnostics: None,
                 last_diagnostics_at: None,
+                mcp_servers: HashMap::new(),
             })
     }
 

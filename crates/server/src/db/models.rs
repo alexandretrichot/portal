@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,19 +32,26 @@ pub struct Device {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(description = "MCP servers configuration for this device")]
 pub struct McpConfig {
+    /// Map of server name to configuration
     #[serde(default)]
     pub servers: HashMap<String, McpServerConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(description = "Configuration for a single MCP server")]
 pub struct McpServerConfig {
+    /// Command to execute (e.g., "npx", "uvx", "/path/to/binary")
     pub command: String,
+    /// Arguments to pass to the command
     #[serde(default)]
     pub args: Vec<String>,
+    /// Environment variables (e.g., API keys)
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Whether this server is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

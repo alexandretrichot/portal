@@ -9,9 +9,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use common::commands::GetDiagnostics;
-use common::{Command, Message};
+use schemars::schema_for;
+use common::Message;
 use crate::auth::middleware::AuthUser;
+use crate::db::models::McpConfig;
 use crate::AppState;
 
 fn extract_base_url(headers: &HeaderMap) -> String {
@@ -39,7 +40,10 @@ pub fn router() -> Router<AppState> {
         .route("/gateway/regenerate", post(regenerate_gateway))
         .route("/install.sh", get(install_script))
         .route("/install/{device_key}", get(device_install_script))
-        // API endpoints for device management
+        // API endpoints
+        .route("/api/schema/mcp-config", get(mcp_config_schema))
+        .route("/api/devices/{id}/mcp-config", get(get_device_mcp_config))
+        .route("/api/devices/{id}/mcp-config", post(set_device_mcp_config))
         .route("/api/devices/{key}/doctor", post(device_doctor))
         .route("/api/devices/{key}/restart", post(device_restart))
         .route("/api/devices/{key}/status", get(device_status))
@@ -67,6 +71,19 @@ struct DeviceView {
     is_online: bool,
     permissions: Vec<PermissionView>,
     has_issues: bool,
+    mcp_servers: Vec<McpServerView>,
+    mcp_config: Vec<McpConfigView>,
+}
+
+struct McpServerView {
+    name: String,
+    running: bool,
+    tools_count: usize,
+    error: Option<String>,
+}
+
+struct McpConfigView {
+    name: String,
 }
 
 struct PermissionView {
@@ -148,6 +165,24 @@ async fn dashboard(
 
             let has_issues = permissions.iter().any(|p| !p.granted);
 
+            let mcp_servers: Vec<McpServerView> = status
+                .mcp_servers
+                .into_iter()
+                .map(|(name, s)| McpServerView {
+                    name,
+                    running: s.running,
+                    tools_count: s.tools_count,
+                    error: s.error,
+                })
+                .collect();
+
+            let mcp_config: Vec<McpConfigView> = d
+                .mcp_config
+                .servers
+                .keys()
+                .map(|name| McpConfigView { name: name.clone() })
+                .collect();
+
             DeviceView {
                 id: d.id,
                 name: d.name,
@@ -156,6 +191,8 @@ async fn dashboard(
                 is_online,
                 permissions,
                 has_issues,
+                mcp_servers,
+                mcp_config,
             }
         })
         .collect();
@@ -784,4 +821,131 @@ async fn device_open_settings(
     }
 
     ApiResponse::ok(serde_json::json!({"message": "Settings opened"}))
+}
+
+// =============================================================================
+// JSON Schema & Monaco Editor API
+// =============================================================================
+
+async fn mcp_config_schema() -> impl IntoResponse {
+    let schema = schema_for!(McpConfig);
+    Json(schema)
+}
+
+async fn get_device_mcp_config(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<McpConfig>::err("Unauthorized").into_response();
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => return ApiResponse::<McpConfig>::err(e.to_string()).into_response(),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return ApiResponse::<McpConfig>::err("No gateway").into_response(),
+        Err(e) => return ApiResponse::<McpConfig>::err(e.to_string()).into_response(),
+    };
+
+    let devices = state.db.get_devices_by_gateway_id(&gateway.id).await.unwrap_or_default();
+    let device = match devices.iter().find(|d| d.id == device_id) {
+        Some(d) => d,
+        None => return ApiResponse::<McpConfig>::err("Device not found").into_response(),
+    };
+
+    ApiResponse::ok(device.mcp_config.clone()).into_response()
+}
+
+async fn set_device_mcp_config(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+    Path(device_id): Path<String>,
+    Json(config): Json<McpConfig>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<serde_json::Value>::err("Unauthorized");
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => return ApiResponse::err(e.to_string()),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return ApiResponse::err("No gateway"),
+        Err(e) => return ApiResponse::err(e.to_string()),
+    };
+
+    let devices = state.db.get_devices_by_gateway_id(&gateway.id).await.unwrap_or_default();
+    let device = match devices.iter().find(|d| d.id == device_id) {
+        Some(d) => d,
+        None => return ApiResponse::err("Device not found"),
+    };
+
+    if let Err(e) = state.db.update_mcp_config(&device_id, &gateway.id, &config).await {
+        return ApiResponse::err(e.to_string());
+    }
+
+    // If device is online, send updated config
+    if state.registry.is_online(&device.key) {
+        let config_map = config
+            .servers
+            .iter()
+            .map(|(name, cfg)| {
+                (
+                    name.clone(),
+                    common::commands::McpServerConfig {
+                        command: cfg.command.clone(),
+                        args: cfg.args.clone(),
+                        env: cfg.env.clone(),
+                        enabled: cfg.enabled,
+                    },
+                )
+            })
+            .collect();
+
+        let cmd = common::commands::UpdateMcpConfig { servers: config_map };
+        let msg = Message::Request {
+            id: Uuid::new_v4(),
+            name: "update_mcp_config".to_string(),
+            payload: serde_json::to_value(&cmd).unwrap(),
+        };
+        let _ = state.registry.send_command(&device.key, msg).await;
+    }
+
+    ApiResponse::ok(serde_json::json!({"saved": true}))
 }
