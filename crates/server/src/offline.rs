@@ -2,30 +2,17 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use crate::registry::DeviceInfo;
-
-pub fn create_offline_response(
-    request_id: Option<serde_json::Value>,
-    device_info: Option<&DeviceInfo>,
-) -> serde_json::Value {
-    let device_desc = device_info
-        .and_then(|d| d.name.as_ref())
-        .map(|name| format!("Device '{}' ", name))
-        .unwrap_or_else(|| "The requested device ".to_string());
-
-    let last_seen_iso = device_info.map(|d| d.last_seen.to_rfc3339());
-
+fn create_offline_response(request_id: Option<serde_json::Value>) -> serde_json::Value {
     json!({
         "jsonrpc": "2.0",
         "id": request_id,
         "error": {
             "code": -32001,
-            "message": format!("{}is currently offline or disconnected", device_desc),
+            "message": "No devices are currently online for this gateway",
             "data": {
                 "error_type": "device_offline",
                 "retry_after_seconds": 30,
-                "help": "The device may be powered off, disconnected from the internet, or the tunnel client may not be running. Please try again later or contact the device owner.",
-                "last_seen": last_seen_iso
+                "help": "The device may be disconnected. Please try again later."
             }
         }
     })
@@ -37,13 +24,9 @@ pub struct OfflineResponse {
 }
 
 impl OfflineResponse {
-    pub fn new(
-        request_id: Option<serde_json::Value>,
-        device_info: Option<&DeviceInfo>,
-        retry_after: u32,
-    ) -> Self {
+    pub fn new(request_id: Option<serde_json::Value>, retry_after: u32) -> Self {
         Self {
-            body: create_offline_response(request_id, device_info),
+            body: create_offline_response(request_id),
             retry_after,
         }
     }
@@ -64,28 +47,4 @@ impl IntoResponse for OfflineResponse {
         )
             .into_response()
     }
-}
-
-pub fn create_timeout_response(
-    request_id: Option<serde_json::Value>,
-    device_info: Option<&DeviceInfo>,
-) -> serde_json::Value {
-    let device_desc = device_info
-        .and_then(|d| d.name.as_ref())
-        .map(|name| format!("Device '{}' ", name))
-        .unwrap_or_else(|| "The device ".to_string());
-
-    json!({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "error": {
-            "code": -32000,
-            "message": format!("{}did not respond in time", device_desc),
-            "data": {
-                "error_type": "request_timeout",
-                "retry_after_seconds": 10,
-                "help": "The device is connected but did not respond to the request. This could be due to high load or a slow MCP server."
-            }
-        }
-    })
 }

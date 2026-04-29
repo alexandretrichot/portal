@@ -6,40 +6,48 @@ use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::Router;
-use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
+use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::json;
 use tower::Service as TowerService;
 
 use crate::mcp_proxy::TunnelProxyServer;
-use crate::offline::OfflineResponse;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/{token}/mcp", any(handle_mcp_streamable))
-        .route("/v1/{token}/status", get(check_device_status))
+        .route("/gw/{gateway_key}/mcp", any(handle_gateway_mcp))
+        .route("/gw/{gateway_key}/status", get(check_gateway_status))
         .route("/health", get(health_check))
 }
 
-async fn handle_mcp_streamable(
+async fn handle_gateway_mcp(
     State(state): State<AppState>,
-    Path(token): Path<String>,
+    Path(gateway_key): Path<String>,
     request: Request<Body>,
 ) -> impl IntoResponse {
-    if !state.registry.is_online(&token) {
-        let device_info = state.registry.get_device_info(&token);
-        return OfflineResponse::new(
-            None,
-            device_info.as_ref(),
-            state.config.offline_response.retry_after_secs,
-        )
-        .into_response();
-    }
+    let gateway = match state.db.get_gateway_by_key(&gateway_key).await {
+        Ok(Some(gw)) => gw,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                json!({"error": "Gateway not found"}).to_string(),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Database error");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "Internal error"}).to_string(),
+            )
+                .into_response();
+        }
+    };
 
     let registry = state.registry.clone();
     let pending = state.pending.clone();
-    let token_clone = token.clone();
+    let gateway_id = gateway.id.clone();
 
     let config = StreamableHttpServerConfig::default()
         .with_stateful_mode(false)
@@ -49,8 +57,8 @@ async fn handle_mcp_streamable(
     let session_manager = Arc::new(LocalSessionManager::default());
     let mut service = StreamableHttpService::new(
         move || -> Result<TunnelProxyServer, std::io::Error> {
-            Ok(TunnelProxyServer::new(
-                token_clone.clone(),
+            Ok(TunnelProxyServer::new_for_gateway(
+                gateway_id.clone(),
                 registry.clone(),
                 pending.clone(),
             ))
@@ -72,21 +80,43 @@ async fn handle_mcp_streamable(
     }
 }
 
-async fn check_device_status(
+async fn check_gateway_status(
     State(state): State<AppState>,
-    Path(token): Path<String>,
+    Path(gateway_key): Path<String>,
 ) -> impl IntoResponse {
-    let is_online = state.registry.is_online(&token);
-    let device_info = state.registry.get_device_info(&token);
+    let gateway = match state.db.get_gateway_by_key(&gateway_key).await {
+        Ok(Some(gw)) => gw,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, json!({"error": "Gateway not found"}).to_string())
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "Internal error"}).to_string(),
+            )
+                .into_response();
+        }
+    };
 
-    let status = if is_online { "online" } else { "offline" };
+    let connections = state.registry.get_gateway_connections(&gateway.id);
+    let devices: Vec<_> = connections
+        .iter()
+        .map(|c| {
+            json!({
+                "alias": c.device_alias,
+                "device_name": c.device_name,
+                "connected_at": c.connected_at_utc.to_rfc3339()
+            })
+        })
+        .collect();
 
     (
         StatusCode::OK,
         json!({
-            "status": status,
-            "device_name": device_info.as_ref().and_then(|d| d.name.clone()),
-            "last_seen": device_info.as_ref().map(|d| d.last_seen.to_rfc3339())
+            "status": if devices.is_empty() { "offline" } else { "online" },
+            "online_devices": devices.len(),
+            "devices": devices
         })
         .to_string(),
     )

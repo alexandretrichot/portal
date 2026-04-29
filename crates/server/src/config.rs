@@ -9,6 +9,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub server: ServerSection,
     #[serde(default)]
+    pub database: DatabaseSection,
+    #[serde(default)]
+    pub clerk: ClerkSection,
+    #[serde(default)]
     pub tokens: TokensSection,
     #[serde(default)]
     pub limits: LimitsSection,
@@ -22,6 +26,8 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             server: ServerSection::default(),
+            database: DatabaseSection::default(),
+            clerk: ClerkSection::default(),
             tokens: TokensSection::default(),
             limits: LimitsSection::default(),
             heartbeat: HeartbeatSection::default(),
@@ -31,9 +37,46 @@ impl Default for ServerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ClerkSection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_clerk_domain")]
+    pub domain: String,
+}
+
+impl Default for ClerkSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            domain: default_clerk_domain(),
+        }
+    }
+}
+
+fn default_clerk_domain() -> String {
+    "clerk.example.com".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DatabaseSection {
+    #[serde(default = "default_database_url")]
+    pub url: String,
+}
+
+impl Default for DatabaseSection {
+    fn default() -> Self {
+        Self {
+            url: default_database_url(),
+        }
+    }
+}
+
+fn default_database_url() -> String {
+    "portal.db".into()
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ServerSection {
-    #[serde(default = "default_bind")]
-    pub bind: String,
     #[serde(default = "default_ws_path")]
     pub ws_path: String,
 }
@@ -41,14 +84,9 @@ pub struct ServerSection {
 impl Default for ServerSection {
     fn default() -> Self {
         Self {
-            bind: default_bind(),
             ws_path: default_ws_path(),
         }
     }
-}
-
-fn default_bind() -> String {
-    "0.0.0.0:8080".into()
 }
 
 fn default_ws_path() -> String {

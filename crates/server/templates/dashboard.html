@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Portal{% endblock %}
+
+{% block nav %}
+<span class="navbar-text me-3">{{ email }}</span>
+<a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2>Your Gateway</h2>
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">MCP Endpoint</h5>
+                <p class="card-text">Configure your AI agent to use this URL:</p>
+                <div class="d-flex align-items-center gap-2 mb-3">
+                    <code class="key-display flex-grow-1">{{ base_url }}/gw/{{ gateway_key }}/mcp</code>
+                    <button class="btn btn-outline-secondary btn-sm copy-btn"
+                            onclick="copyToClipboard('{{ base_url }}/gw/{{ gateway_key }}/mcp', this)">
+                        Copy
+                    </button>
+                </div>
+                <form method="post" action="/gateway/regenerate" class="d-inline">
+                    <button type="submit" class="btn btn-warning btn-sm"
+                            onclick="return confirm('Regenerate gateway key? All existing integrations will stop working.')">
+                        Regenerate Key
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2>Devices</h2>
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createDeviceModal">
+                + New Device
+            </button>
+        </div>
+
+        {% if devices.is_empty() %}
+        <div class="alert alert-info">
+            No devices yet. Create one to connect your machines.
+        </div>
+        {% else %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Alias</th>
+                        <th>Status</th>
+                        <th>Connection Key</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for device in devices %}
+                    <tr>
+                        <td>{{ device.name }}</td>
+                        <td><code>{{ device.alias }}</code></td>
+                        <td>
+                            {% if device.is_online %}
+                            <span class="device-online">Online</span>
+                            {% else %}
+                            <span class="device-offline">Offline</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="d-flex align-items-center gap-2">
+                                <code class="key-display small">{{ device.key }}</code>
+                                <button class="btn btn-outline-secondary btn-sm copy-btn"
+                                        onclick="copyToClipboard('{{ device.key }}', this)">
+                                    Copy
+                                </button>
+                            </div>
+                        </td>
+                        <td>
+                            <form method="post" action="/devices/{{ device.id }}/regenerate" class="d-inline">
+                                <button type="submit" class="btn btn-warning btn-sm"
+                                        onclick="return confirm('Regenerate key? The device will need to reconnect.')">
+                                    Regenerate
+                                </button>
+                            </form>
+                            <form method="post" action="/devices/{{ device.id }}/delete" class="d-inline">
+                                <button type="submit" class="btn btn-danger btn-sm"
+                                        onclick="return confirm('Delete this device?')">
+                                    Delete
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+
+        <div class="card mt-4">
+            <div class="card-body">
+                <h5 class="card-title">Quick Setup</h5>
+                <p class="card-text">Install the Portal client on your device:</p>
+                <pre class="bg-light p-3 rounded"><code>curl -fsSL {{ base_url }}/install.sh | bash</code></pre>
+                <p class="card-text">Then connect the device:</p>
+                <pre class="bg-light p-3 rounded"><code>portal daemon --key YOUR_DEVICE_KEY --server {{ base_url }}</code></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="createDeviceModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="post" action="/devices">
+                <div class="modal-header">
+                    <h5 class="modal-title">Create Device</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Name</label>
+                        <input type="text" class="form-control" id="name" name="name" required
+                               placeholder="My MacBook">
+                    </div>
+                    <div class="mb-3">
+                        <label for="alias" class="form-label">Alias (2-8 chars)</label>
+                        <input type="text" class="form-control" id="alias" name="alias" required
+                               pattern="[a-z0-9]{2,8}" placeholder="mac">
+                        <div class="form-text">Short identifier used in tool names (e.g., mac:read_file)</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

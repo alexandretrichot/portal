@@ -3,14 +3,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{Query, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use tokio::sync::mpsc;
-use tokio::time::timeout;
 use common::{AuthResultMessage, PingMessage, TunnelMessage};
 use uuid::Uuid;
 
@@ -18,21 +18,47 @@ use crate::registry::ConnectionHandle;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/tunnel", get(tunnel_websocket))
+    Router::new().route("/device", get(device_websocket))
 }
 
-async fn tunnel_websocket(
+#[derive(Deserialize)]
+struct DeviceQuery {
+    key: String,
+}
+
+async fn device_websocket(
     ws: WebSocketUpgrade,
+    Query(query): Query<DeviceQuery>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(|socket| handle_tunnel_connection(socket, state))
+    ws.on_upgrade(move |socket| handle_device_connection(socket, query.key, state))
 }
 
-async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
+async fn handle_device_connection(socket: WebSocket, device_key: String, state: AppState) {
     let (mut sender, mut receiver) = socket.split();
 
+    let device_info = match state.db.get_device_by_key(&device_key).await {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            tracing::warn!("Invalid device key attempted");
+            let fail_msg = TunnelMessage::AuthResult(AuthResultMessage::failure("Invalid device key"));
+            let _ = sender
+                .send(Message::Text(serde_json::to_string(&fail_msg).unwrap().into()))
+                .await;
+            return;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Database error during device auth");
+            let fail_msg = TunnelMessage::AuthResult(AuthResultMessage::failure("Internal error"));
+            let _ = sender
+                .send(Message::Text(serde_json::to_string(&fail_msg).unwrap().into()))
+                .await;
+            return;
+        }
+    };
+
     let auth_timeout = Duration::from_secs(10);
-    let auth_result = timeout(auth_timeout, async {
+    let auth_result = tokio::time::timeout(auth_timeout, async {
         while let Some(msg) = receiver.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
@@ -60,19 +86,14 @@ async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
         }
     };
 
-    if !validate_token(&auth.token, &state).await {
-        let fail_msg = TunnelMessage::AuthResult(AuthResultMessage::failure("Invalid token"));
-        let _ = sender
-            .send(Message::Text(serde_json::to_string(&fail_msg).unwrap().into()))
-            .await;
-        return;
-    }
-
     let (tx, mut rx) = mpsc::channel::<TunnelMessage>(100);
     let session_id = Uuid::new_v4().to_string();
 
     let handle = ConnectionHandle {
         session_id: session_id.clone(),
+        device_id: device_info.device.id.clone(),
+        gateway_id: device_info.device.gateway_id.clone(),
+        device_alias: device_info.device.alias.clone(),
         connected_at: Instant::now(),
         connected_at_utc: Utc::now(),
         device_name: auth.device_name.clone(),
@@ -80,13 +101,22 @@ async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
         last_seen: Arc::new(AtomicU64::new(Utc::now().timestamp() as u64)),
     };
 
-    let token = auth.token.clone();
-    state.registry.register(&token, handle).await;
+    state
+        .registry
+        .register(
+            &device_key,
+            &device_info.device.id,
+            &device_info.device.gateway_id,
+            &device_info.device.alias,
+            handle,
+        )
+        .await;
 
     tracing::info!(
         session_id = %session_id,
+        device_alias = %device_info.device.alias,
         device_name = ?auth.device_name,
-        "Client connected"
+        "Device connected"
     );
 
     let success_msg = TunnelMessage::AuthResult(AuthResultMessage::success(session_id.clone()));
@@ -95,7 +125,7 @@ async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
         .await
         .is_err()
     {
-        state.registry.unregister(&token);
+        state.registry.unregister(&device_key);
         return;
     }
 
@@ -108,16 +138,16 @@ async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        state.registry.update_last_seen(&token);
+                        state.registry.update_last_seen(&device_key);
                         if let Ok(tunnel_msg) = serde_json::from_str::<TunnelMessage>(&text) {
-                            handle_client_message(tunnel_msg, &state, &token).await;
+                            handle_client_message(tunnel_msg, &state).await;
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {
-                        state.registry.update_last_seen(&token);
+                        state.registry.update_last_seen(&device_key);
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        tracing::info!(session_id = %session_id, "Client disconnected");
+                        tracing::info!(session_id = %session_id, "Device disconnected");
                         break;
                     }
                     Some(Err(e)) => {
@@ -152,11 +182,11 @@ async fn handle_tunnel_connection(socket: WebSocket, state: AppState) {
         }
     }
 
-    state.registry.unregister(&token);
+    state.registry.unregister(&device_key);
     tracing::info!(session_id = %session_id, "Connection closed");
 }
 
-async fn handle_client_message(msg: TunnelMessage, state: &AppState, _token: &str) {
+async fn handle_client_message(msg: TunnelMessage, state: &AppState) {
     match msg {
         TunnelMessage::McpResponse(response) => {
             let correlation_id = response.correlation_id;
@@ -175,25 +205,3 @@ async fn handle_client_message(msg: TunnelMessage, state: &AppState, _token: &st
         _ => {}
     }
 }
-
-async fn validate_token(token: &str, state: &AppState) -> bool {
-    match state.config.tokens.backend.as_str() {
-        "allow_all" => true,
-        "static_file" => {
-            if let Some(ref file_path) = state.config.tokens.file {
-                if let Ok(content) = std::fs::read_to_string(file_path) {
-                    let token_hash = sha2::Sha256::digest(token.as_bytes());
-                    let token_hash_hex = hex::encode(token_hash);
-                    content.lines().any(|line| line.trim() == token_hash_hex)
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-use sha2::Digest;
