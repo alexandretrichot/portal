@@ -474,6 +474,9 @@ else
     sudo mv /tmp/portal-agent "$INSTALL_DIR/portal-agent"
 fi
 
+echo "==> Configuring agent..."
+portal-agent configure --server "$SERVER_URL" --key "$DEVICE_KEY"
+
 echo "==> Setting up daemon..."
 
 if [ "$OS" = "darwin" ]; then
@@ -491,10 +494,6 @@ if [ "$OS" = "darwin" ]; then
     <key>ProgramArguments</key>
     <array>
         <string>/usr/local/bin/portal-agent</string>
-        <string>--server</string>
-        <string>SERVER_URL_PLACEHOLDER</string>
-        <string>--key</string>
-        <string>DEVICE_KEY_PLACEHOLDER</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -507,9 +506,6 @@ if [ "$OS" = "darwin" ]; then
 </dict>
 </plist>
 PLIST
-
-    sed -i '' "s|SERVER_URL_PLACEHOLDER|$SERVER_URL|g" "$PLIST_PATH"
-    sed -i '' "s|DEVICE_KEY_PLACEHOLDER|$DEVICE_KEY|g" "$PLIST_PATH"
 
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
     launchctl load "$PLIST_PATH"
@@ -533,7 +529,7 @@ Description=Portal Agent
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/portal-agent --server $SERVER_URL --key $DEVICE_KEY
+ExecStart=/usr/local/bin/portal-agent
 Restart=always
 RestartSec=10
 
@@ -557,7 +553,7 @@ SYSTEMD
         echo "==> systemd not available"
         echo ""
         echo "To run manually:"
-        echo "  portal-agent --server $SERVER_URL --key $DEVICE_KEY"
+        echo "  portal-agent"
         echo ""
         echo "Or install systemd and re-run this script:"
         echo "  apt install systemd"

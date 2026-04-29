@@ -50,8 +50,7 @@ impl McpServerConfig {
     }
 }
 
-pub fn load_config(path: &str) -> Result<AgentConfig> {
-    let path = Path::new(path);
+pub fn load_config(path: &Path) -> Result<AgentConfig> {
     if !path.exists() {
         return Ok(AgentConfig::default());
     }
