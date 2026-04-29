@@ -8,21 +8,21 @@ use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::config::{ClientConfig, TunnelServerConfig};
+use crate::config::{AgentConfig, ServerConfig};
 use crate::mcp_proxy::McpProxyManager;
 use crate::tunnel::TunnelConnection;
 
 #[derive(Parser)]
-#[command(name = "tunnel-client", about = "MCP Tunnel Client (Local Gateway)")]
+#[command(name = "portal-agent", about = "Portal Agent - Connect your device to Portal gateway")]
 struct Args {
-    #[arg(short, long, default_value = "config/client.json")]
+    #[arg(short, long, default_value = "config/agent.json")]
     config: String,
 
-    #[arg(long, env = "TUNNEL_TOKEN")]
-    token: Option<String>,
+    #[arg(long, env = "PORTAL_KEY")]
+    key: Option<String>,
 
-    #[arg(long, env = "TUNNEL_URL")]
-    server_url: Option<String>,
+    #[arg(long, env = "PORTAL_SERVER")]
+    server: Option<String>,
 
     #[arg(long)]
     device_name: Option<String>,
@@ -39,35 +39,35 @@ async fn main() -> Result<()> {
 
     let mut config = config::load_config(&args.config).unwrap_or_else(|e| {
         tracing::warn!("Failed to load config from {}: {}, using defaults", args.config, e);
-        ClientConfig::default()
+        AgentConfig::default()
     });
 
     if args.device_name.is_some() {
         config.device_name = args.device_name;
     }
 
-    let tunnel_config = match (args.server_url, args.token, config.tunnel_server) {
-        (Some(url), Some(token), _) => TunnelServerConfig { url, token },
-        (Some(url), None, Some(cfg)) => TunnelServerConfig { url, token: cfg.token },
-        (None, Some(token), Some(cfg)) => TunnelServerConfig { url: cfg.url, token },
+    let server_config = match (args.server, args.key, config.server) {
+        (Some(url), Some(key), _) => ServerConfig { url, key },
+        (Some(url), None, Some(cfg)) => ServerConfig { url, key: cfg.key },
+        (None, Some(key), Some(cfg)) => ServerConfig { url: cfg.url, key },
         (None, None, Some(cfg)) => cfg,
         _ => {
             return Err(anyhow::anyhow!(
-                "Tunnel server config required. Set tunnelServer in config or use --server-url and --token"
+                "Server config required. Use --server and --key, or set in config file"
             ));
         }
     };
 
     tracing::info!(
-        server_url = %tunnel_config.url,
+        server = %server_config.url,
         device_name = ?config.device_name,
         mcp_servers = config.mcp_servers.len(),
-        "Starting tunnel client"
+        "Starting Portal agent"
     );
 
     let mcp_manager = Arc::new(McpProxyManager::new(config.mcp_servers));
 
-    let tunnel = TunnelConnection::new(tunnel_config, config.device_name, mcp_manager);
+    let tunnel = TunnelConnection::new(server_config, config.device_name, mcp_manager);
 
     tunnel.run().await?;
 

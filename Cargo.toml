@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/common",
-    "crates/client",
+    "crates/agent",
     "crates/server",
     "crates/cli",
     "crates/mcp-imessage",

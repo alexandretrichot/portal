@@ -8,21 +8,21 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use common::{AuthMessage, PongMessage, TunnelMessage};
 
-use crate::config::TunnelServerConfig;
+use crate::config::ServerConfig;
 use crate::mcp_proxy::McpProxyManager;
 
 const BASE_DELAY_SECS: u64 = 1;
 const MAX_DELAY_SECS: u64 = 60;
 
 pub struct TunnelConnection {
-    server_config: TunnelServerConfig,
+    server_config: ServerConfig,
     device_name: Option<String>,
     mcp_manager: Arc<McpProxyManager>,
 }
 
 impl TunnelConnection {
     pub fn new(
-        server_config: TunnelServerConfig,
+        server_config: ServerConfig,
         device_name: Option<String>,
         mcp_manager: Arc<McpProxyManager>,
     ) -> Self {
@@ -67,14 +67,14 @@ impl TunnelConnection {
     }
 
     async fn connect_and_run(&self) -> Result<()> {
-        let url = format!("{}/tunnel", self.server_config.url);
-        tracing::info!(url = %url, "Connecting to tunnel server");
+        let url = format!("{}/device?key={}", self.server_config.url, self.server_config.key);
+        tracing::info!(server = %self.server_config.url, "Connecting to Portal server");
 
         let (ws_stream, _) = connect_async(&url).await?;
         let (mut write, mut read) = ws_stream.split();
 
         let auth_msg = TunnelMessage::Auth(AuthMessage {
-            token: self.server_config.token.clone(),
+            token: self.server_config.key.clone(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
             device_name: self.device_name.clone(),
         });

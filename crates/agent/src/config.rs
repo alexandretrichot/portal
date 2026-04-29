@@ -6,22 +6,22 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ClientConfig {
+pub struct AgentConfig {
     #[serde(default)]
     pub device_name: Option<String>,
 
     #[serde(default)]
-    pub tunnel_server: Option<TunnelServerConfig>,
+    pub server: Option<ServerConfig>,
 
     #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
-impl Default for ClientConfig {
+impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             device_name: None,
-            tunnel_server: None,
+            server: None,
             mcp_servers: HashMap::new(),
         }
     }
@@ -29,9 +29,9 @@ impl Default for ClientConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TunnelServerConfig {
+pub struct ServerConfig {
     pub url: String,
-    pub token: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,25 +42,20 @@ pub struct McpServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
-    pub url: Option<String>,
 }
 
 impl McpServerConfig {
     pub fn is_stdio(&self) -> bool {
         self.command.is_some()
     }
-
-    pub fn is_http(&self) -> bool {
-        self.url.is_some()
-    }
 }
 
-pub fn load_config(path: &str) -> Result<ClientConfig> {
+pub fn load_config(path: &str) -> Result<AgentConfig> {
     let path = Path::new(path);
     if !path.exists() {
-        return Ok(ClientConfig::default());
+        return Ok(AgentConfig::default());
     }
     let content = std::fs::read_to_string(path)?;
-    let config: ClientConfig = serde_json::from_str(&content)?;
+    let config: AgentConfig = serde_json::from_str(&content)?;
     Ok(config)
 }

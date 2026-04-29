@@ -99,10 +99,10 @@
         <div class="card mt-4">
             <div class="card-body">
                 <h5 class="card-title">Quick Setup</h5>
-                <p class="card-text">Install the Portal client on your device:</p>
+                <p class="card-text">Install the Portal agent on your device:</p>
                 <pre class="bg-light p-3 rounded"><code>curl -fsSL {{ base_url }}/install.sh | bash</code></pre>
                 <p class="card-text">Then connect the device:</p>
-                <pre class="bg-light p-3 rounded"><code>portal daemon --key YOUR_DEVICE_KEY --server {{ base_url }}</code></pre>
+                <pre class="bg-light p-3 rounded"><code>portal-agent --key YOUR_DEVICE_KEY --server {{ base_url }}</code></pre>
             </div>
         </div>
     </div>
