@@ -6,7 +6,7 @@ RUN pnpm install --frozen-lockfile
 COPY frontend .
 RUN pnpm build
 
-FROM rust:1.87-alpine AS chef
+FROM rust:1.94-alpine AS chef
 RUN apk add --no-cache musl-dev
 RUN cargo install cargo-chef
 WORKDIR /app

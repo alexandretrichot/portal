@@ -10,6 +10,13 @@ fn main() {
         .join("..")
         .join("frontend");
 
+    let dist_dir = frontend_dir.join("dist");
+
+    // Skip if dist already exists (e.g., in Docker where frontend is pre-built)
+    if dist_dir.join("index.html").exists() {
+        return;
+    }
+
     let status = Command::new("pnpm")
         .arg("build")
         .current_dir(&frontend_dir)
