@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{middleware, Router};
+use tower_http::cors::CorsLayer;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -83,6 +84,8 @@ async fn main() -> Result<()> {
         clerk,
     };
 
+    let cors = CorsLayer::permissive();
+
     let app = Router::new()
         .merge(device_handler::router())
         .merge(mcp_handler::router())
@@ -91,6 +94,7 @@ async fn main() -> Result<()> {
             state.clerk.clone(),
             auth::middleware::clerk_auth_middleware,
         ))
+        .layer(cors)
         .with_state(state);
 
     tracing::info!("Starting Portal server on {}", bind_addr);

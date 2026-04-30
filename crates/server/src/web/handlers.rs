@@ -43,6 +43,11 @@ pub fn router() -> Router<AppState> {
         .route("/install.sh", get(install_script))
         .route("/install/{device_key}", get(device_install_script))
         // API endpoints
+        .route("/api/dashboard", get(api_dashboard))
+        .route("/api/devices", post(api_create_device))
+        .route("/api/devices/{id}", axum::routing::delete(api_delete_device))
+        .route("/api/devices/{id}/regenerate", post(api_regenerate_device))
+        .route("/api/gateway/regenerate", post(api_regenerate_gateway))
         .route("/api/schema/mcp-config", get(mcp_config_schema))
         .route("/api/devices/{id}/mcp-config", get(get_device_mcp_config))
         .route("/api/devices/{id}/mcp-config", post(set_device_mcp_config))
@@ -857,6 +862,336 @@ async fn device_open_settings(
     }
 
     ApiResponse::ok(serde_json::json!({"message": "Settings opened"}))
+}
+
+// =============================================================================
+// JSON API for React Frontend
+// =============================================================================
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DashboardResponse {
+    gateway: GatewayResponse,
+    devices: Vec<DeviceResponse>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayResponse {
+    id: String,
+    key: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceResponse {
+    id: String,
+    name: String,
+    alias: String,
+    key: String,
+    is_online: bool,
+    has_issues: bool,
+    permissions: Vec<PermissionResponse>,
+    mcp_servers: Vec<McpServerResponse>,
+    mcp_config: Vec<McpConfigEntryResponse>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionResponse {
+    name: String,
+    granted: bool,
+    settings_url: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerResponse {
+    name: String,
+    running: bool,
+    tools_count: usize,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpConfigEntryResponse {
+    name: String,
+}
+
+async fn api_dashboard(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "Unauthorized"}))).into_response();
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No gateway found"}))).into_response();
+        }
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let devices = match state.db.get_devices_by_gateway_id(&gateway.id).await {
+        Ok(d) => d,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
+    };
+
+    let device_responses: Vec<DeviceResponse> = devices
+        .into_iter()
+        .map(|d| {
+            let is_online = state.registry.is_online(&d.key);
+            let status = state.registry.get_device_status(&d.id);
+
+            let permissions: Vec<PermissionResponse> = status
+                .diagnostics
+                .map(|diag| {
+                    diag.permissions
+                        .into_iter()
+                        .map(|p| PermissionResponse {
+                            name: p.name,
+                            granted: p.status == common::commands::PermissionStatus::Granted,
+                            settings_url: p.settings_url,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let has_issues = permissions.iter().any(|p| !p.granted);
+
+            let mcp_servers: Vec<McpServerResponse> = status
+                .mcp_servers
+                .into_iter()
+                .map(|(name, s)| McpServerResponse {
+                    name,
+                    running: s.running,
+                    tools_count: s.tools_count,
+                    error: s.error,
+                })
+                .collect();
+
+            let mcp_config: Vec<McpConfigEntryResponse> = d
+                .mcp_config
+                .servers
+                .keys()
+                .map(|name| McpConfigEntryResponse { name: name.clone() })
+                .collect();
+
+            DeviceResponse {
+                id: d.id,
+                name: d.name,
+                alias: d.alias,
+                key: d.key,
+                is_online,
+                has_issues,
+                permissions,
+                mcp_servers,
+                mcp_config,
+            }
+        })
+        .collect();
+
+    Json(DashboardResponse {
+        gateway: GatewayResponse {
+            id: gateway.id,
+            key: gateway.key,
+        },
+        devices: device_responses,
+    }).into_response()
+}
+
+#[derive(Deserialize)]
+struct CreateDeviceRequest {
+    name: String,
+    alias: String,
+}
+
+async fn api_create_device(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+    Json(body): Json<CreateDeviceRequest>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<serde_json::Value>::err("Unauthorized").into_response();
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(_) => return ApiResponse::<serde_json::Value>::err("Database error").into_response(),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        _ => return ApiResponse::<serde_json::Value>::err("No gateway found").into_response(),
+    };
+
+    let alias = body.alias.to_lowercase();
+    if alias.len() < 2 || alias.len() > 8 || !alias.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return ApiResponse::<serde_json::Value>::err("Invalid alias").into_response();
+    }
+
+    match state.db.create_device(&gateway.id, &body.name, &alias).await {
+        Ok(device) => ApiResponse::ok(serde_json::json!({"id": device.id})).into_response(),
+        Err(e) => ApiResponse::<serde_json::Value>::err(e.to_string()).into_response(),
+    }
+}
+
+async fn api_delete_device(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<serde_json::Value>::err("Unauthorized");
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(_) => return ApiResponse::err("Database error"),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        _ => return ApiResponse::err("No gateway found"),
+    };
+
+    match state.db.delete_device(&device_id, &gateway.id).await {
+        Ok(_) => ApiResponse::ok(serde_json::json!({"deleted": true})),
+        Err(e) => ApiResponse::err(e.to_string()),
+    }
+}
+
+async fn api_regenerate_device(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<serde_json::Value>::err("Unauthorized");
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(_) => return ApiResponse::err("Database error"),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        _ => return ApiResponse::err("No gateway found"),
+    };
+
+    match state.db.regenerate_device_key(&device_id, &gateway.id).await {
+        Ok(key) => ApiResponse::ok(serde_json::json!({"key": key})),
+        Err(e) => ApiResponse::err(e.to_string()),
+    }
+}
+
+async fn api_regenerate_gateway(
+    State(state): State<AppState>,
+    user: Option<axum::Extension<AuthUser>>,
+) -> impl IntoResponse {
+    let user = match user {
+        Some(axum::Extension(u)) => u,
+        None => {
+            if state.clerk.is_none() {
+                AuthUser {
+                    clerk_user_id: "dev-user".to_string(),
+                    email: Some("dev@example.com".to_string()),
+                }
+            } else {
+                return ApiResponse::<serde_json::Value>::err("Unauthorized");
+            }
+        }
+    };
+
+    let db_user = match state
+        .db
+        .get_or_create_user(&user.clerk_user_id, user.email.as_deref().unwrap_or("unknown"))
+        .await
+    {
+        Ok(u) => u,
+        Err(_) => return ApiResponse::err("Database error"),
+    };
+
+    let gateway = match state.db.get_gateway_by_user_id(&db_user.id).await {
+        Ok(Some(g)) => g,
+        _ => return ApiResponse::err("No gateway found"),
+    };
+
+    match state.db.regenerate_gateway_key(&gateway.id).await {
+        Ok(key) => ApiResponse::ok(serde_json::json!({"key": key})),
+        Err(e) => ApiResponse::err(e.to_string()),
+    }
 }
 
 // =============================================================================
