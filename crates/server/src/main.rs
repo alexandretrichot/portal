@@ -4,7 +4,6 @@ mod db;
 mod frontend;
 mod mcp_handler;
 mod mcp_proxy;
-mod offline;
 mod pending;
 mod registry;
 mod device_handler;
