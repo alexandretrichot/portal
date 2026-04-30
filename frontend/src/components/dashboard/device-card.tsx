@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { CopyButton } from '@/components/copy-button'
+import { McpConfigDialog } from './mcp-config-dialog'
 import type { Device } from '@/api/types'
 
 interface DeviceCardProps {
@@ -98,6 +99,13 @@ export function DeviceCard({
         {device.isOnline && device.mcpServers.length > 0 && (
           <McpServersStatus servers={device.mcpServers} />
         )}
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {device.mcpConfig.length} MCP server{device.mcpConfig.length !== 1 ? 's' : ''} configured
+          </span>
+          <McpConfigDialog deviceId={device.id} deviceName={device.name} />
+        </div>
 
         <div className="space-y-2">
           <label className="text-xs text-muted-foreground">Install command</label>
