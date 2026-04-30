@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Settings } from 'lucide-react'
+import Editor, { type OnMount } from '@monaco-editor/react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogClose,
 } from '@/components/ui/dialog'
 import { useDeviceMcpConfig, useUpdateMcpConfig } from '@/api/hooks'
+import { api } from '@/api/client'
 import type { McpConfig } from '@/api/types'
 import { toast } from 'sonner'
 
@@ -22,6 +24,7 @@ export function McpConfigDialog({ deviceId, deviceName }: McpConfigDialogProps) 
   const [open, setOpen] = useState(false)
   const [configText, setConfigText] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
 
   const { data: configData, isLoading } = useDeviceMcpConfig(deviceId)
   const updateConfig = useUpdateMcpConfig()
@@ -32,6 +35,26 @@ export function McpConfigDialog({ deviceId, deviceName }: McpConfigDialogProps) 
       setError(null)
     }
   }, [configData])
+
+  const handleEditorMount: OnMount = async (editor, monaco) => {
+    editorRef.current = editor
+
+    try {
+      const schema = await api.get<object>('/api/schema/mcp-config')
+      monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+        validate: true,
+        schemas: [
+          {
+            uri: 'https://portal.local/mcp-config.schema.json',
+            fileMatch: ['*'],
+            schema,
+          },
+        ],
+      })
+    } catch (e) {
+      console.warn('Failed to load MCP config schema', e)
+    }
+  }
 
   const handleSave = () => {
     try {
@@ -72,23 +95,32 @@ export function McpConfigDialog({ deviceId, deviceName }: McpConfigDialogProps) 
 
         <div className="mt-4 space-y-4">
           {isLoading ? (
-            <div className="h-64 flex items-center justify-center text-muted-foreground">
+            <div className="h-80 flex items-center justify-center text-muted-foreground">
               Loading...
             </div>
           ) : (
-            <>
-              <textarea
-                className="w-full h-64 font-mono text-sm p-3 rounded-md border bg-muted resize-none"
+            <div className="h-80 border rounded-md overflow-hidden">
+              <Editor
+                defaultLanguage="json"
                 value={configText}
-                onChange={(e) => {
-                  setConfigText(e.target.value)
+                onChange={(value) => {
+                  setConfigText(value || '')
                   setError(null)
                 }}
-                placeholder='{"servers": {}}'
+                onMount={handleEditorMount}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  lineNumbers: 'off',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                }}
+                theme="vs-dark"
               />
-              {error && <p className="text-sm text-destructive">{error}</p>}
-            </>
+            </div>
           )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
 
           <div className="flex justify-end gap-2">
             <DialogClose render={<Button variant="outline">Cancel</Button>} />
