@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::Request,
+    extract::{Request, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -18,20 +18,23 @@ pub fn router() -> Router<AppState> {
     Router::new().fallback(get(serve_frontend))
 }
 
-async fn serve_frontend(req: Request) -> impl IntoResponse {
+async fn serve_frontend(State(state): State<AppState>, req: Request) -> impl IntoResponse {
     let path = req.uri().path().trim_start_matches('/');
 
-    // Try exact path first
+    // Try exact path first (static assets)
     if let Some(content) = Assets::get(path) {
         return response_for_asset(path, &content.data);
     }
 
-    // For SPA: serve index.html for non-asset routes
+    // For SPA: serve index.html with injected config
     if let Some(content) = Assets::get("index.html") {
+        let html = String::from_utf8_lossy(&content.data);
+        let html = inject_config(&html, &state);
+
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-            .body(Body::from(content.data.to_vec()))
+            .body(Body::from(html))
             .unwrap();
     }
 
@@ -39,6 +42,19 @@ async fn serve_frontend(req: Request) -> impl IntoResponse {
         .status(StatusCode::NOT_FOUND)
         .body(Body::from("Not found"))
         .unwrap()
+}
+
+fn inject_config(html: &str, state: &AppState) -> String {
+    let config = serde_json::json!({
+        "clerkPublishableKey": state.config.clerk.publishable_key,
+    });
+
+    let script = format!(
+        r#"<script>window.__CONFIG__ = {};</script>"#,
+        serde_json::to_string(&config).unwrap_or_default()
+    );
+
+    html.replace("<head>", &format!("<head>{}", script))
 }
 
 fn response_for_asset(path: &str, data: &[u8]) -> Response {

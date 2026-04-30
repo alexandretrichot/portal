@@ -28,10 +28,18 @@ declare module '@tanstack/react-router' {
   }
 }
 
-const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
+declare global {
+  interface Window {
+    __CONFIG__?: {
+      clerkPublishableKey?: string
+    }
+  }
+}
+
+const clerkPubKey = window.__CONFIG__?.clerkPublishableKey
 
 if (!clerkPubKey) {
-  throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY')
+  throw new Error('Missing clerkPublishableKey in window.__CONFIG__')
 }
 
 createRoot(document.getElementById('root')!).render(
