@@ -56,6 +56,8 @@ pub struct ClerkSection {
     pub enabled: bool,
     #[serde(default = "default_clerk_domain")]
     pub domain: String,
+    #[serde(default)]
+    pub publishable_key: Option<String>,
 }
 
 impl Default for ClerkSection {
@@ -63,6 +65,7 @@ impl Default for ClerkSection {
         Self {
             enabled: false,
             domain: default_clerk_domain(),
+            publishable_key: None,
         }
     }
 }

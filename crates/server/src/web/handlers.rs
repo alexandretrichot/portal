@@ -33,6 +33,8 @@ fn extract_base_url(headers: &HeaderMap) -> String {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
+        .route("/login", get(login))
+        .route("/logout", get(logout))
         .route("/dashboard", get(dashboard))
         .route("/devices", post(create_device))
         .route("/devices/{id}/delete", post(delete_device))
@@ -52,6 +54,39 @@ pub fn router() -> Router<AppState> {
 
 async fn index() -> Redirect {
     Redirect::to("/dashboard")
+}
+
+fn get_account_portal_domain(clerk_domain: &str) -> String {
+    // clerk_domain is like "guiding-moccasin-46.clerk.accounts.dev"
+    // Account Portal is "guiding-moccasin-46.accounts.dev" (without .clerk)
+    clerk_domain.replace(".clerk.accounts.dev", ".accounts.dev")
+}
+
+async fn login(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let base_url = extract_base_url(&headers);
+    let redirect_url = format!("{}/dashboard", base_url);
+    let portal_domain = get_account_portal_domain(&state.config.clerk.domain);
+
+    let sign_in_url = format!(
+        "https://{}/sign-in?redirect_url={}",
+        portal_domain,
+        urlencoding::encode(&redirect_url)
+    );
+
+    Redirect::to(&sign_in_url)
+}
+
+async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let base_url = extract_base_url(&headers);
+    let portal_domain = get_account_portal_domain(&state.config.clerk.domain);
+
+    let sign_out_url = format!(
+        "https://{}/sign-out?redirect_url={}",
+        portal_domain,
+        urlencoding::encode(&base_url)
+    );
+
+    Redirect::to(&sign_out_url)
 }
 
 #[derive(Template)]
@@ -97,6 +132,9 @@ async fn dashboard(
     headers: HeaderMap,
     user: Option<axum::Extension<AuthUser>>,
 ) -> impl IntoResponse {
+    let base_url = extract_base_url(&headers);
+
+    // If not authenticated, redirect to login
     let user = match user {
         Some(axum::Extension(u)) => u,
         None => {
@@ -196,8 +234,6 @@ async fn dashboard(
             }
         })
         .collect();
-
-    let base_url = extract_base_url(&headers);
 
     let template = DashboardTemplate {
         email: user.email.unwrap_or_else(|| "Unknown".to_string()),

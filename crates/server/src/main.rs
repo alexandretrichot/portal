@@ -12,7 +12,7 @@ mod web;
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
+use axum::{middleware, Router};
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -87,6 +87,10 @@ async fn main() -> Result<()> {
         .merge(device_handler::router())
         .merge(mcp_handler::router())
         .merge(web::router())
+        .layer(middleware::from_fn_with_state(
+            state.clerk.clone(),
+            auth::middleware::clerk_auth_middleware,
+        ))
         .with_state(state);
 
     tracing::info!("Starting Portal server on {}", bind_addr);
