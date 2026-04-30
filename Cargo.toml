@@ -78,6 +78,9 @@ schemars = "0.8"
 # URL encoding
 urlencoding = "2"
 
+# Semver parsing
+semver = "1"
+
 # Static file embedding
 rust-embed = "8"
 mime_guess = "2"

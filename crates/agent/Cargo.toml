@@ -27,6 +27,7 @@ rand.workspace = true
 chrono.workspace = true
 rmcp.workspace = true
 reqwest.workspace = true
+semver.workspace = true
 dirs = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]

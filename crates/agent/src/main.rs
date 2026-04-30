@@ -1,5 +1,6 @@
 mod config;
 mod native_tools;
+mod update;
 pub mod diagnostics;
 mod handler;
 mod mcp_proxy;
@@ -19,7 +20,7 @@ fn default_config_path() -> std::path::PathBuf {
 }
 
 #[derive(Parser)]
-#[command(name = "portal-agent", about = "Portal Agent - Connect your device to Portal gateway")]
+#[command(name = "portal-agent", about = "Portal Agent - Connect your device to Portal gateway", version)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -248,6 +249,8 @@ fn configure(config_path: &std::path::Path, server: &str, key: &str) -> Result<(
     Ok(())
 }
 
+const GITHUB_REPO: &str = "alexandretrichot/portal";
+
 async fn run_agent(args: Args, config_path: &std::path::Path) -> Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -274,6 +277,9 @@ async fn run_agent(args: Args, config_path: &std::path::Path) -> Result<()> {
             ));
         }
     };
+
+    // Check for updates every 5 minutes
+    update::start_update_loop(GITHUB_REPO);
 
     tracing::info!(
         server = %server_config.url,
