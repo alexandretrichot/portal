@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod db;
+mod frontend;
 mod mcp_handler;
 mod mcp_proxy;
 mod offline;
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
         .merge(device_handler::router())
         .merge(mcp_handler::router())
         .merge(web::router())
+        .merge(frontend::router())
         .layer(middleware::from_fn_with_state(
             state.clerk.clone(),
             auth::middleware::clerk_auth_middleware,

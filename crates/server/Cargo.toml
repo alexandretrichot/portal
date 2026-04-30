@@ -37,3 +37,5 @@ askama.workspace = true
 askama_axum.workspace = true
 schemars.workspace = true
 urlencoding.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true

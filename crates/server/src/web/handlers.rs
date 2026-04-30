@@ -32,14 +32,7 @@ fn extract_base_url(headers: &HeaderMap) -> String {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/", get(index))
-        .route("/login", get(login))
-        .route("/logout", get(logout))
-        .route("/dashboard", get(dashboard))
-        .route("/devices", post(create_device))
-        .route("/devices/{id}/delete", post(delete_device))
-        .route("/devices/{id}/regenerate", post(regenerate_device))
-        .route("/gateway/regenerate", post(regenerate_gateway))
+        // Install scripts (needed for agent installation)
         .route("/install.sh", get(install_script))
         .route("/install/{device_key}", get(device_install_script))
         // API endpoints
