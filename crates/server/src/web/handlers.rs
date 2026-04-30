@@ -871,6 +871,7 @@ async fn device_open_settings(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DashboardResponse {
+    base_url: String,
     gateway: GatewayResponse,
     devices: Vec<DeviceResponse>,
 }
@@ -880,6 +881,7 @@ struct DashboardResponse {
 struct GatewayResponse {
     id: String,
     key: String,
+    mcp_url: String,
 }
 
 #[derive(Serialize)]
@@ -894,6 +896,7 @@ struct DeviceResponse {
     permissions: Vec<PermissionResponse>,
     mcp_servers: Vec<McpServerResponse>,
     mcp_config: Vec<McpConfigEntryResponse>,
+    install_command: String,
 }
 
 #[derive(Serialize)]
@@ -921,8 +924,10 @@ struct McpConfigEntryResponse {
 
 async fn api_dashboard(
     State(state): State<AppState>,
+    headers: HeaderMap,
     user: Option<axum::Extension<AuthUser>>,
 ) -> impl IntoResponse {
+    let base_url = extract_base_url(&headers);
     let user = match user {
         Some(axum::Extension(u)) => u,
         None => {
@@ -1005,6 +1010,8 @@ async fn api_dashboard(
                 .map(|name| McpConfigEntryResponse { name: name.clone() })
                 .collect();
 
+            let install_command = format!("curl -fsSL {}/install/{} | bash", base_url, d.key);
+
             DeviceResponse {
                 id: d.id,
                 name: d.name,
@@ -1015,14 +1022,19 @@ async fn api_dashboard(
                 permissions,
                 mcp_servers,
                 mcp_config,
+                install_command,
             }
         })
         .collect();
 
+    let mcp_url = format!("{}/gw/{}/mcp", base_url, gateway.key);
+
     Json(DashboardResponse {
+        base_url,
         gateway: GatewayResponse {
             id: gateway.id,
             key: gateway.key,
+            mcp_url,
         },
         devices: device_responses,
     }).into_response()
