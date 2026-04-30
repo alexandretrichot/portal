@@ -922,19 +922,14 @@ async fn set_device_mcp_config(
 
     // If device is online, send updated config
     if state.registry.is_online(&device.key) {
-        let config_map = config
+        // Convert via JSON since both enums have the same serde representation
+        let config_map: std::collections::HashMap<String, common::commands::McpServerConfig> = config
             .servers
             .iter()
-            .map(|(name, cfg)| {
-                (
-                    name.clone(),
-                    common::commands::McpServerConfig {
-                        command: cfg.command.clone(),
-                        args: cfg.args.clone(),
-                        env: cfg.env.clone(),
-                        enabled: cfg.enabled,
-                    },
-                )
+            .filter_map(|(name, cfg)| {
+                let json = serde_json::to_value(cfg).ok()?;
+                let common_cfg: common::commands::McpServerConfig = serde_json::from_value(json).ok()?;
+                Some((name.clone(), common_cfg))
             })
             .collect();
 

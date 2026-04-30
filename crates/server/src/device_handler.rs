@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,21 +133,17 @@ async fn handle_device_connection(socket: WebSocket, device_key: String, state: 
     }
 
     // Send MCP server config to agent
-    let config_map = device_info
+    // Convert from db::models::McpServerConfig to common::commands::McpServerConfig via JSON
+    let config_map: HashMap<String, common::commands::McpServerConfig> = device_info
         .device
         .mcp_config
         .servers
         .into_iter()
-        .map(|(name, cfg)| {
-            (
-                name,
-                common::McpServerConfig {
-                    command: cfg.command,
-                    args: cfg.args,
-                    env: cfg.env,
-                    enabled: cfg.enabled,
-                },
-            )
+        .filter_map(|(name, cfg)| {
+            // Both enums have the same serde representation, so we can convert via JSON
+            let json = serde_json::to_value(&cfg).ok()?;
+            let common_cfg: common::commands::McpServerConfig = serde_json::from_value(json).ok()?;
+            Some((name, common_cfg))
         })
         .collect();
 

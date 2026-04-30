@@ -4,14 +4,17 @@ use std::sync::Arc;
 use rmcp::{
     Peer, RoleClient, ServiceExt,
     model::CallToolRequestParams,
-    transport::TokioChildProcess,
+    transport::{
+        TokioChildProcess,
+        StreamableHttpClientTransport,
+        streamable_http_client::StreamableHttpClientTransportConfig,
+    },
 };
 use tokio::sync::Mutex;
 use common::{McpRequestMessage, McpResponseMessage, TunnelError};
-use common::commands::McpServerStatus;
+use common::commands::{McpServerConfig, McpServerStatus};
 
 use crate::native_tools::NativeTools;
-use crate::config::McpServerConfig;
 
 struct McpServer {
     peer: Arc<Peer<RoleClient>>,
@@ -107,10 +110,6 @@ impl McpProxyManager {
 
         // Add tools from external MCP servers
         for (name, config) in &self.configs {
-            if !config.is_stdio() {
-                continue;
-            }
-
             let peer = match self.get_or_create_server(name, config).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -122,6 +121,9 @@ impl McpProxyManager {
             match peer.list_tools(Default::default()).await {
                 Ok(result) => {
                     let tools_count = result.tools.len();
+                    let tool_names: Vec<_> = result.tools.iter().map(|t| &*t.name).collect();
+                    tracing::info!(server = %name, count = tools_count, tools = ?tool_names, "Listed tools from MCP server");
+
                     for tool in &result.tools {
                         tool_map.insert(tool.name.to_string(), name.clone());
                     }
@@ -134,10 +136,12 @@ impl McpProxyManager {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(server = %name, error = %e, "Failed to list tools");
+                    tracing::error!(server = %name, error = %e, "Failed to list tools");
                 }
             }
         }
+
+        tracing::info!(total_tools = all_tools.len(), servers = self.configs.len(), "Aggregated tools from all MCP servers");
 
         let response = serde_json::json!({
             "jsonrpc": "2.0",
@@ -272,10 +276,6 @@ impl McpProxyManager {
         let mut all_resources = Vec::new();
 
         for (name, config) in &self.configs {
-            if !config.is_stdio() {
-                continue;
-            }
-
             let peer = match self.get_or_create_server(name, config).await {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -299,10 +299,6 @@ impl McpProxyManager {
         let mut all_prompts = Vec::new();
 
         for (name, config) in &self.configs {
-            if !config.is_stdio() {
-                continue;
-            }
-
             let peer = match self.get_or_create_server(name, config).await {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -322,25 +318,31 @@ impl McpProxyManager {
     }
 
     async fn forward_to_first(&self, req: McpRequestMessage) -> McpResponseMessage {
-        let target_name = self.configs.keys().next().cloned();
-
-        let Some(target_name) = target_name else {
-            return McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32600, "No MCP server configured"),
-            );
+        let (target_name, config) = match self.configs.iter().next() {
+            Some((name, cfg)) => (name.clone(), cfg.clone()),
+            None => {
+                return McpResponseMessage::error(
+                    req.correlation_id,
+                    TunnelError::new(-32600, "No MCP server configured"),
+                );
+            }
         };
 
-        let config = self.configs.get(&target_name).unwrap();
+        let peer = match self.get_or_create_server(&target_name, &config).await {
+            Ok(p) => p,
+            Err(e) => {
+                return McpResponseMessage::error(
+                    req.correlation_id,
+                    TunnelError::new(-32603, e),
+                );
+            }
+        };
 
-        if config.is_stdio() {
-            self.forward_stdio(req, &target_name, config).await
-        } else {
-            McpResponseMessage::error(
-                req.correlation_id,
-                TunnelError::new(-32600, "Only stdio servers supported"),
-            )
-        }
+        // Forward the raw request - this is a fallback for unknown methods
+        McpResponseMessage::error(
+            req.correlation_id,
+            TunnelError::new(-32601, "Method not supported for forwarding"),
+        )
     }
 
     async fn get_or_create_server(
@@ -348,6 +350,7 @@ impl McpProxyManager {
         name: &str,
         config: &McpServerConfig,
     ) -> Result<Arc<Peer<RoleClient>>, String> {
+        // Check if already connected
         {
             let servers = self.servers.lock().await;
             if let Some(server) = servers.get(name) {
@@ -355,15 +358,30 @@ impl McpProxyManager {
             }
         }
 
-        let command = config.command.as_ref().ok_or("No command specified")?;
+        match config {
+            McpServerConfig::Stdio { command, args, env, .. } => {
+                self.create_stdio_server(name, command, args, env).await
+            }
+            McpServerConfig::Http { url, headers, .. } => {
+                self.create_http_server(name, url, headers).await
+            }
+        }
+    }
 
+    async fn create_stdio_server(
+        &self,
+        name: &str,
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> Result<Arc<Peer<RoleClient>>, String> {
         let mut cmd = tokio::process::Command::new(command);
-        cmd.args(&config.args);
-        for (key, value) in &config.env {
+        cmd.args(args);
+        for (key, value) in env {
             cmd.env(key, value);
         }
 
-        tracing::info!(server = %name, command = %command, args = ?config.args, "Starting MCP server");
+        tracing::info!(server = %name, command = %command, args = ?args, "Starting stdio MCP server");
 
         let transport = TokioChildProcess::new(cmd)
             .map_err(|e| format!("Failed to spawn process: {}", e))?;
@@ -376,7 +394,7 @@ impl McpProxyManager {
             })?;
 
         let peer = Arc::new(running.peer().clone());
-        let pid = std::process::id(); // We don't have direct access to child PID with rmcp
+        let pid = std::process::id();
 
         {
             let mut servers = self.servers.lock().await;
@@ -394,30 +412,67 @@ impl McpProxyManager {
         tokio::spawn(async move {
             let result = running.waiting().await;
             tracing::info!(server = %name_clone, "MCP server process exited");
-
-            // Remove from servers map
             servers_ref.lock().await.remove(&name_clone);
-
-            // Record error if any
             if let Err(e) = result {
                 errors_ref.lock().await.insert(name_clone, e.to_string());
             }
         });
 
-        tracing::info!(server = %name, "MCP server started successfully");
-
+        tracing::info!(server = %name, "Stdio MCP server started successfully");
         Ok(peer)
     }
 
-    async fn forward_stdio(
+    async fn create_http_server(
         &self,
-        req: McpRequestMessage,
-        _name: &str,
-        _config: &McpServerConfig,
-    ) -> McpResponseMessage {
-        McpResponseMessage::error(
-            req.correlation_id,
-            TunnelError::new(-32601, "Method not supported"),
-        )
+        name: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+    ) -> Result<Arc<Peer<RoleClient>>, String> {
+        tracing::info!(server = %name, url = %url, "Connecting to HTTP MCP server");
+
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+
+        // Add Authorization header if present
+        if let Some(auth) = headers.get("Authorization") {
+            // Strip "Bearer " prefix if present
+            let token = auth.strip_prefix("Bearer ").unwrap_or(auth);
+            config = config.auth_header(token);
+        }
+
+        let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(config);
+
+        let running = ().serve(transport).await
+            .map_err(|e| {
+                let err = format!("Failed to connect to HTTP MCP server: {}", e);
+                tracing::error!(server = %name, "{}", err);
+                err
+            })?;
+
+        let peer = Arc::new(running.peer().clone());
+
+        {
+            let mut servers = self.servers.lock().await;
+            servers.insert(name.to_string(), McpServer {
+                peer: peer.clone(),
+                pid: 0, // No PID for HTTP servers
+                tools_count: 0,
+            });
+        }
+
+        // Keep the running service alive
+        let name_clone = name.to_string();
+        let servers_ref = self.servers.clone();
+        let errors_ref = self.errors.clone();
+        tokio::spawn(async move {
+            let result = running.waiting().await;
+            tracing::info!(server = %name_clone, "HTTP MCP server connection closed");
+            servers_ref.lock().await.remove(&name_clone);
+            if let Err(e) = result {
+                errors_ref.lock().await.insert(name_clone, e.to_string());
+            }
+        });
+
+        tracing::info!(server = %name, "HTTP MCP server connected successfully");
+        Ok(peer)
     }
 }

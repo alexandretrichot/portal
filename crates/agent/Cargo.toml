@@ -26,6 +26,7 @@ dashmap.workspace = true
 rand.workspace = true
 chrono.workspace = true
 rmcp.workspace = true
+reqwest.workspace = true
 dirs = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]

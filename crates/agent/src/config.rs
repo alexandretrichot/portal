@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -29,8 +28,6 @@ pub struct ServerConfig {
     pub url: String,
     pub key: String,
 }
-
-pub use common::commands::McpServerConfig;
 
 pub fn load_config(path: &Path) -> Result<AgentConfig> {
     if !path.exists() {
