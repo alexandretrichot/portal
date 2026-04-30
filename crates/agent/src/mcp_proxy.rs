@@ -328,7 +328,7 @@ impl McpProxyManager {
             }
         };
 
-        let peer = match self.get_or_create_server(&target_name, &config).await {
+        let _peer = match self.get_or_create_server(&target_name, &config).await {
             Ok(p) => p,
             Err(e) => {
                 return McpResponseMessage::error(
